@@ -21,11 +21,6 @@ def config():
             "password": "test",
             "namespace_id": "test-ns",
         },
-        llm={
-            "base_url": "http://test-llm:8000/v1",
-            "model": "test-model",
-            "api_key": "test-key",
-        },
     )
     return cfg
 
