@@ -91,89 +91,68 @@ def chat_stream(
     """
     logger.info("chat_stream: thread_id=%s, message=%s", thread_id, message[:50])
 
+    llm = create_llm_client(config.llm.base_url, config.llm.api_key, config.llm.timeout)
+    llm_lc = ChatOpenAI(
+        openai_api_key=config.llm.api_key,
+        openai_base_url=config.llm.base_url,
+        model=config.llm.model,
+        temperature=config.llm.temperature,
+        max_tokens=config.llm.max_tokens,
+        timeout=config.llm.timeout,
+    )
+    skill_router = SkillRouter.create_llm(
+        llm,
+        model=config.llm.model,
+        temperature=config.router.routing_temperature,
+        max_tokens=config.router.routing_max_tokens,
+    )
+
     def event_generator():
-        llm_client = create_llm_client(
-            config.llm.base_url, config.llm.api_key, config.llm.timeout,
-        )
-        skill_router = SkillRouter.create_llm(
-            llm_client,
-            model=config.llm.model,
-            temperature=config.router.routing_temperature,
-            max_tokens=config.router.routing_max_tokens,
-        )
-
-        # 获取所有 Skills 并路由
-        skills = client.get_all_skills()[: config.router.max_skills_for_routing]
-        route_result = skill_router.route(skills, message)
-        logger.info("chat_stream: route skill=%s, reason=%s", route_result.skill_name or "N/A", route_result.reason[:80])
-
-        if route_result.skill_name:
-            # 发送 skill 选中 → tool_call(load_skill) + text
-            yield {"event": "tool_call", "data": json.dumps({
-                "id": f"skill-{thread_id}",
-                "name": "load_skill",
-                "args": {"skill_name": route_result.skill_name},
-            }, ensure_ascii=False)}
-            yield {"event": "text", "data": json.dumps({
-                "content": f"使用 Skill: {route_result.skill_name}\n",
-            }, ensure_ascii=False)}
-
-            try:
-                # 获取指令文件
-                file_label, skill_md = client.get_instruction_file(
-                    route_result.skill_name, "",
-                    priority=config.router.instruction_file_priority,
-                )
-                if skill_md:
-                    skill_md = skill_md[:5000]  # 截断
-                    logger.info("chat_stream: instruction loaded (%s, %d chars)", file_label, len(skill_md))
-
-                # 调用 LLM 获取回复
-                prompt = (
-                    f"下面的内容是 {route_result.skill_name} 的指令文件（{file_label}），"
-                    f"请按照以上指令，帮助用户解决问题。\n\n"
-                    f"--- 指令开始 ---\n{skill_md}\n--- 指令结束 ---\n\n"
-                    f"用户问题：\n{message}\n"
-                )
-                resp = llm_client.chat.completions.create(
-                    model=config.llm.model,
-                    messages=[
-                        {"role": "system", "content": "你是一个 AI 助手，请严格按照以下 Skill 指令帮助用户解决问题。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=config.llm.temperature,
-                    max_tokens=config.llm.max_tokens,
-                    stream=True,
-                )
-                for chunk in resp:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield {"event": "text", "data": json.dumps({
-                            "content": chunk.choices[0].delta.content,
-                        }, ensure_ascii=False)}
-
-            except Exception as exc:
-                logger.error("chat_stream: skill execution failed: %s", exc, exc_info=True)
-                yield {"event": "agent_error", "data": json.dumps({
-                    "message": f"Skill 执行失败: {exc}",
-                }, ensure_ascii=False)}
-                yield {"event": "done", "data": json.dumps({"response": ""})}
-                return
-        else:
-            # 没有选中 skill，直接调用 LLM
-            resp = llm_client.chat.completions.create(
-                model=config.llm.model,
-                messages=[{"role": "user", "content": message}],
-                temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-                stream=True,
+        try:
+            # 用 LangGraph Agent 跑，然后映射为 skills-agent-proto 事件格式
+            events = stream_agent_response(
+                user_message=message,
+                client=client,
+                config=config,
+                llm=llm_lc,
+                router=skill_router,
             )
-            for chunk in resp:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield {"event": "text", "data": json.dumps(
-                        {"content": chunk.choices[0].delta.content},
+            for event in events:
+                # 映射: discovered → tool_call(load_skill) 或 text
+                if event["event"] == "discovered":
+                    # 不发送 discovered，前端不关心
+                    continue
+                elif event["event"] == "skill_selected":
+                    skill = event["data"]["skill_name"]
+                    yield {"event": "tool_call", "data": json.dumps({
+                        "id": f"skill-{thread_id}",
+                        "name": "load_skill",
+                        "args": {"skill_name": skill},
+                    }, ensure_ascii=False)}
+                    yield {"event": "text", "data": json.dumps({
+                        "content": f"使用 Skill: {skill}\n",
+                    }, ensure_ascii=False)}
+                elif event["event"] == "no_skill":
+                    # 直接走 LLM，跳过 tool_call
+                    pass
+                elif event["event"] == "instruction_loaded":
+                    pass  # 内部状态，不暴露给前端
+                elif event["event"] == "content":
+                    yield {"event": "text", "data": json.dumps({
+                        "content": event["data"],
+                    }, ensure_ascii=False)}
+                elif event["event"] == "error":
+                    yield {"event": "agent_error", "data": json.dumps(
+                        {"message": event["data"].get("error", "unknown")},
                         ensure_ascii=False,
                     )}
-
-        yield {"event": "done", "data": json.dumps({"response": ""})}
+                elif event["event"] == "done":
+                    yield {"event": "done", "data": json.dumps({"response": ""})}
+        except Exception as exc:
+            logger.error("chat_stream: unexpected error: %s", exc, exc_info=True)
+            yield {"event": "agent_error", "data": json.dumps({
+                "message": str(exc),
+            }, ensure_ascii=False)}
+            yield {"event": "done", "data": json.dumps({"response": ""})}
 
     return EventSourceResponse(event_generator())

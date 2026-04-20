@@ -1,4 +1,7 @@
-"""路由定义 + SSE 流式。"""
+"""路由定义 + SSE 流式。
+
+基于 LangGraph Agent 的 Skill 路由 + 执行。
+"""
 
 from __future__ import annotations
 
@@ -7,13 +10,13 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends
-from openai import OpenAI
+from langchain_openai import ChatOpenAI
 from sse_starlette.sse import EventSourceResponse
 
 from nacos_skill_client import NacosNotFoundError
 from nacos_skill_client.client import NacosSkillClient
 from nacos_skill_client.config import Config
-from nacos_skill_client.router import SkillRouter, route_and_execute
+from nacos_skill_client.router import SkillRouter
 from nacos_skill_client.utils import create_llm_client
 
 from . import dependencies
@@ -25,6 +28,7 @@ from .schemas import (
     SkillMetadataListResponse,
     SkillMetadataResponse,
 )
+from agent.stream import stream_agent_response
 
 get_client = dependencies.get_client
 get_config = dependencies.get_config
@@ -257,98 +261,52 @@ def route_skill(
     )
 
 
-@router.post("/skills/route/stream", summary="Skill 路由 + 流式执行")
+@router.post("/skills/route/stream", summary="LangGraph Agent 流式执行")
 def route_skill_stream(
     req: RouteRequest,
     client: NacosSkillClient = Depends(get_client),
     config: Config = Depends(get_config),
 ):
+    """LangGraph Agent 流式路由 + 执行。
+
+    内部流程: discover → route → activate → execute
+    外部事件: discovered → skill_selected/instruction_loaded → content* → done
+    """
     logger.info("route_skill_stream: query=%s (first 50 chars), strategy=%s", req.query[:50], req.strategy)
-    llm_client = create_llm_client(config.llm.base_url, config.llm.api_key, config.llm.timeout)
+
+    llm = create_llm_client(config.llm.base_url, config.llm.api_key, config.llm.timeout)
+    llm_lc = ChatOpenAI(
+        openai_api_key=config.llm.api_key,
+        openai_base_url=config.llm.base_url,
+        model=config.llm.model,
+        temperature=config.llm.temperature,
+        max_tokens=config.llm.max_tokens,
+        timeout=config.llm.timeout,
+    )
 
     if req.strategy == "keyword":
-        logger.debug("route_skill_stream: creating keyword router")
         skill_router = SkillRouter.create_keyword()
     else:
         skill_router = SkillRouter.create_llm(
-            llm_client,
+            llm,
             model=config.llm.model,
             temperature=config.router.routing_temperature,
             max_tokens=config.router.routing_max_tokens,
         )
 
-    skills = client.get_all_skills()
-    limited = skills[: config.router.max_skills_for_routing]
-    route_result = skill_router.route(limited, req.query)
-    logger.info("route_skill_stream: matched skill=%s, reason=%s", route_result.skill_name or "N/A", route_result.reason[:100])
-
     def event_generator():
-        # 发送路由结果
-        yield {"event": "route", "data": json.dumps(route_result.to_dict(), ensure_ascii=False)}
-
-        if route_result.skill_name:
-            logger.info("route_skill_stream: selected skill=%s", route_result.skill_name)
-            yield {"event": "skill_selected", "data": json.dumps({"skill_name": route_result.skill_name})}
-            try:
-                file_label: str | None = None
-                skill_md: str | None = None
-                # 尝试从缓存读取
-                if client.cache and client.cache.has_skill(route_result.skill_name):
-                    file_label, skill_md = client.cache.get_skill_file(
-                        route_result.skill_name, "AGENTS.md",
-                    )
-                # 缓存未命中则从 Nacos 下载
-                if skill_md is None:
-                    file_label, skill_md = client.get_instruction_file(
-                        route_result.skill_name, "",
-                        priority=config.router.instruction_file_priority,
-                    )
-                # 缓存指令文件
-                if client.cache and file_label and skill_md:
-                    client.cache.save_skill(route_result.skill_name, skill_md, file_label)
-                if skill_md is None:
-                    skill_md = ""
-                yield {"event": "instruction_loaded", "data": json.dumps({"file_label": file_label, "length": len(skill_md)})}
-                logger.info("route_skill_stream: instruction loaded (%s, %d chars), starting LLM stream", file_label, len(skill_md))
-
-                prompt = (
-                    f"下面的内容是 {route_result.skill_name} 的指令文件（{file_label}），"
-                    f"请按照以上指令，帮助用户解决问题。\n\n"
-                    f"--- 指令开始 ---\n{skill_md}\n--- 指令结束 ---\n\n"
-                    f"用户问题：\n{req.query}\n"
-                )
-                resp = llm_client.chat.completions.create(
-                    model=config.llm.model,
-                    messages=[
-                        {"role": "system", "content": "你是一个 AI 助手，请严格按照以下 Skill 指令帮助用户解决问题。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=config.llm.temperature,
-                    max_tokens=config.llm.max_tokens,
-                    stream=True,
-                )
-                for chunk in resp:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield {"event": "content", "data": chunk.choices[0].delta.content}
-                logger.info("route_skill_stream: LLM stream completed for skill=%s", route_result.skill_name)
-            except Exception as exc:
-                logger.error("route_skill_stream: skill stream failed for %s: %s", route_result.skill_name, exc, exc_info=True)
-                yield {"event": "error", "data": json.dumps({"error": str(exc)})}
-        else:
-            logger.info("route_skill_stream: no skill matched, streaming LLM directly")
-            yield {"event": "no_skill", "data": json.dumps({"reason": route_result.reason})}
-            resp = llm_client.chat.completions.create(
-                model=config.llm.model,
-                messages=[{"role": "user", "content": req.query}],
-                temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-                stream=True,
-            )
-            for chunk in resp:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield {"event": "content", "data": chunk.choices[0].delta.content}
-            logger.info("route_skill_stream: LLM direct stream completed")
-
-        yield {"event": "done", "data": json.dumps({"status": "complete"})}
+        try:
+            for event in stream_agent_response(
+                user_message=req.query,
+                client=client,
+                config=config,
+                llm=llm_lc,
+                router=skill_router,
+            ):
+                yield event
+        except Exception as exc:
+            logger.error("route_skill_stream: unexpected error: %s", exc, exc_info=True)
+            yield {"event": "error", "data": json.dumps({"error": str(exc)}, ensure_ascii=False)}
+            yield {"event": "done", "data": json.dumps({"status": "error"})}
 
     return EventSourceResponse(event_generator())
