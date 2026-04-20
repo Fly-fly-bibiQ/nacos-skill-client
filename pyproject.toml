@@ -32,8 +32,6 @@ dependencies = [
     "fastapi>=0.104",
     "uvicorn[standard]>=0.24",
     "openai>=1.0",
-    "langchain-openai>=1.0",
-    "langgraph>=1.0",
     "sse-starlette>=1.6",
 ]
 

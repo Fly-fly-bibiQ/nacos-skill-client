@@ -1,0 +1,10 @@
+{
+  "TC-008": "OK",
+  "TC-009": "OK - 186 skills",
+  "TC-010": "OK - input filled",
+  "TC-011": "OK - response=\"RESPONSE\n\n\u4f60\u597d\uff01\u5f88\u9ad8\u5174\u4e3a\u60a8\u670d\u52a1\u3002\u8bf7\u95ee\u6709\u4ec0\u4e48\u6211\u53ef\u4ee5\u5e2e\u60a8\u7684\u5417\uff1f\"",
+  "TC-013": "OK",
+  "TC-014": "OK",
+  "TC-015": "OK",
+  "TC-016": "OK - thread reset"
+}
