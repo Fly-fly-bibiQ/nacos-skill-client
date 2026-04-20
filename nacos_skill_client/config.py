@@ -134,6 +134,19 @@ class LoggingConfig(BaseModel):
     )
 
 
+class AgentConfig(BaseModel):
+    """Agent 配置。"""
+
+    enabled: bool = Field(default=False, description="是否启用 Agent 模式")
+    llm_provider: str = Field(default="openai", description="LLM provider (openai/anthropic/local)")
+    model_name: str = Field(default="gpt-4o-mini", description="模型名称")
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0, description="生成温度")
+    max_iterations: int = Field(default=10, ge=1, description="最大思考轮次")
+    max_time: int = Field(default=120, ge=1, description="最大执行时间(秒)")
+    max_skills_to_load: int = Field(default=50, ge=1, description="最大加载 Skill 数量")
+    agent_type: str = Field(default="tool-calling", description="Agent 类型 (tool-calling/react)")
+
+
 # --------------------------------------------------------------------------- #
 # 主配置
 # --------------------------------------------------------------------------- #
@@ -162,6 +175,7 @@ class Config(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     router: RouterConfig = Field(default_factory=RouterConfig)
     skill_loader: SkillLoaderConfig = Field(default_factory=SkillLoaderConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
     pagination: PaginationConfig = Field(default_factory=PaginationConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     api: APIConfig = Field(default_factory=APIConfig)
