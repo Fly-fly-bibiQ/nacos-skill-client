@@ -239,7 +239,7 @@ def stream_agent_response(
             ),
         ]
 
-        _stream_llm_content(messages, llm, config)
+        yield from _stream_llm_content(messages, llm, config)
     else:
         # ── Step 3 (bypass): Direct LLM ──
         logger.info("stream: no skill matched, direct LLM call")
@@ -247,7 +247,7 @@ def stream_agent_response(
             "reason": route_reason,
         }, ensure_ascii=False)}
 
-        _stream_llm_content(
+        yield from _stream_llm_content(
             [HumanMessage(content=user_message)],
             llm, config,
         )
@@ -289,14 +289,19 @@ def _build_injected_graph(
 
 def _stream_llm_content(messages: list, llm: Any, config: Any):
     """流式调用 LLM 并 yield content chunks。"""
+    logger.info("_stream_llm_content: starting LLM stream")
     resp = llm.stream(
         messages,
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
     )
+    chunk_count = 0
     for chunk in resp:
+        chunk_count += 1
+        logger.info("_stream_llm_content: chunk %d, content=%r", chunk_count, getattr(chunk, 'content', None)[:50])
         if chunk.content:
             yield {"event": "content", "data": chunk.content}
+    logger.info("_stream_llm_content: done, yielded %d chunks", chunk_count)
 
 
 def _final_sse(event: str, data: str) -> Iterator[dict[str, Any]]:

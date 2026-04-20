@@ -115,6 +115,7 @@ def chat_stream(
     def event_generator():
         try:
             # 用 LangGraph Agent 跑，然后映射为 skills-agent-proto 事件格式
+            logger.info("event_generator: starting stream_agent_response")
             events = stream_agent_response(
                 user_message=message,
                 client=client,
@@ -123,6 +124,7 @@ def chat_stream(
                 router=skill_router,
             )
             for event in events:
+                logger.info("event_generator: received event=%s", event["event"])
                 # 映射: discovered → tool_call(load_skill) 或 text
                 if event["event"] == "discovered":
                     # 不发送 discovered，前端不关心
@@ -130,11 +132,13 @@ def chat_stream(
                 elif event["event"] == "skill_selected":
                     skill = event["data"]["skill_name"]
                     yield {"event": "tool_call", "data": json.dumps({
+                        "type": "tool_call",
                         "id": f"skill-{thread_id}",
                         "name": "load_skill",
                         "args": {"skill_name": skill},
                     }, ensure_ascii=False)}
                     yield {"event": "text", "data": json.dumps({
+                        "type": "text",
                         "content": f"使用 Skill: {skill}\n",
                     }, ensure_ascii=False)}
                 elif event["event"] == "no_skill":
@@ -144,20 +148,26 @@ def chat_stream(
                     pass  # 内部状态，不暴露给前端
                 elif event["event"] == "content":
                     yield {"event": "text", "data": json.dumps({
+                        "type": "text",
                         "content": event["data"],
                     }, ensure_ascii=False)}
                 elif event["event"] == "error":
-                    yield {"event": "agent_error", "data": json.dumps(
-                        {"message": event["data"].get("error", "unknown")},
-                        ensure_ascii=False,
-                    )}
+                    yield {"event": "agent_error", "data": json.dumps({
+                        "type": "error",
+                        "message": event["data"].get("error", "unknown"),
+                    }, ensure_ascii=False)}
                 elif event["event"] == "done":
-                    yield {"event": "done", "data": json.dumps({"response": ""})}
+                    # event["data"] may be a JSON string or dict depending on source
+                    d = event["data"]
+                    if isinstance(d, str):
+                        d = json.loads(d)
+                    yield {"event": "done", "data": json.dumps({"type": "done", "response": d.get("response", "")})}
         except Exception as exc:
             logger.error("chat_stream: unexpected error: %s", exc, exc_info=True)
             yield {"event": "agent_error", "data": json.dumps({
+                "type": "error",
                 "message": str(exc),
             }, ensure_ascii=False)}
-            yield {"event": "done", "data": json.dumps({"response": ""})}
+            yield {"event": "done", "data": json.dumps({"type": "done", "response": ""})}
 
     return EventSourceResponse(event_generator())

@@ -28,11 +28,13 @@ export function openChatStream({
   onEvent,
   onError,
 }: StreamOptions): () => void {
-  const endpoint = new URL(`${normalizeBaseUrl(apiBaseUrl)}/api/chat/stream`);
-  endpoint.searchParams.set("message", message);
-  endpoint.searchParams.set("thread_id", threadId);
+  const baseUrl = normalizeBaseUrl(apiBaseUrl);
+  const relativePath = baseUrl ? `${baseUrl}/api/chat/stream` : "/api/chat/stream";
+  const url = new URL(relativePath, typeof location !== "undefined" ? location.href : undefined);
+  url.searchParams.set("message", message);
+  url.searchParams.set("thread_id", threadId);
 
-  const source = new EventSource(endpoint.toString());
+  const source = new EventSource(url.toString());
   let terminalEventHandled = false;
 
   for (const eventName of STREAM_EVENT_TYPES) {

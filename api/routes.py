@@ -307,6 +307,6 @@ def route_skill_stream(
         except Exception as exc:
             logger.error("route_skill_stream: unexpected error: %s", exc, exc_info=True)
             yield {"event": "error", "data": json.dumps({"error": str(exc)}, ensure_ascii=False)}
-            yield {"event": "done", "data": json.dumps({"status": "error"})}
+            yield {"event": "done", "data": json.dumps({"type": "done", "status": "error"})}
 
     return EventSourceResponse(event_generator())
