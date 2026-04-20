@@ -422,7 +422,7 @@ class NacosSkillClient:
         使用 Client API: GET /nacos/v3/client/ai/agentspecs/search
         """
         params: dict[str, Any] = {
-            "namespaceId": ns,
+            "namespaceId": namespace_id,
             "keyword": keyword,
             "pageNo": page_no,
             "pageSize": page_size,
