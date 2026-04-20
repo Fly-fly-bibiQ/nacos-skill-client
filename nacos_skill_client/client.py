@@ -1010,6 +1010,71 @@ class NacosSkillClient:
             return file_obj.content
         return None
 
+    # ------------------------------------------------------------------ #
+    #  ZIP 下载 — 官方 3.4 API
+    # ------------------------------------------------------------------ #
+
+    def download_skill_zip(
+        self,
+        name: str,
+        version: str | None = None,
+        label: str | None = None,
+        namespace_id: str | None = None,
+    ) -> bytes:
+        """通过 Nacos 官方 API 下载 Skill ZIP 包。
+
+        对应 Nacos Open API 3.4:
+        GET /nacos/v3/client/ai/skills?name=xxx&version=xxx&label=xxx&namespaceId=xxx
+
+        返回 application/octet-stream ZIP 文件二进制数据。
+
+        Args:
+            name: Skill 名称。
+            version: 版本号（不传则默认 latest）。
+            label: 标签（可选）。
+            namespace_id: 命名空间 ID。
+
+        Returns:
+            ZIP 文件的二进制数据。
+
+        Raises:
+            NacosNotFoundError: Skill 不存在。
+            NacosAPIError: 请求失败。
+        """
+        params: dict[str, Any] = {"name": name}
+        if version:
+            params["version"] = version
+        if label:
+            params["label"] = label
+        if namespace_id:
+            params["namespaceId"] = namespace_id
+        elif self.namespace_id:
+            params["namespaceId"] = self.namespace_id
+
+        url = f"{self.base_url}/nacos/v3/client/ai/skills"
+        headers = self._auth_header()
+
+        resp = self._session.get(url, params=params, headers=headers, timeout=self.timeout)
+
+        # 401 自动重试（和 _request 一致）
+        if resp.status_code == 401:
+            logger.info("Token expired, re-authenticating")
+            self._login(self._username, self._password)
+            headers = self._auth_header()
+            resp = self._session.get(url, params=params, headers=headers, timeout=self.timeout)
+
+        if resp.status_code == 404:
+            raise NacosNotFoundError(f"Skill 不存在: {name}")
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+                message = body.get("message", resp.text[:200])
+            except ValueError:
+                message = resp.text[:200]
+            raise NacosAPIError(f"下载失败: {message}")
+
+        return resp.content
+
     def close(self) -> None:
         self._session.close()
 

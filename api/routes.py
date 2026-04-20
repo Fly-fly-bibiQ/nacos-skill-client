@@ -8,15 +8,14 @@
 
 from __future__ import annotations
 
-import io
 import json
 import logging
-import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from nacos_skill_client import NacosNotFoundError
 from nacos_skill_client.client import NacosSkillClient
+from nacos_skill_client.exceptions import NacosAPIError
 from nacos_skill_client.config import Config
 
 from . import dependencies
@@ -167,84 +166,53 @@ def get_agents_md(name: str, version: str, client: NacosSkillClient = Depends(ge
 
 
 # --------------------------------------------------------------------------- #
-# Skill ZIP 下载端点
+# Skill ZIP 下载端点（调用 Nacos 官方 3.4 API）
 # --------------------------------------------------------------------------- #
 
 
 @router.get("/skills/{name}/zip/{version}", summary="下载 Skill ZIP 包")
 def download_skill_zip(name: str, version: str, namespace_id: str = "public", client: NacosSkillClient = Depends(get_client)):
-    """将 Skill 的所有资源文件打包为 ZIP 下载。
+    """通过 Nacos 官方 API 下载 Skill ZIP 包。
 
-    包含：
-    - SKILL.md / AGENTS.md / SOUL.md（指令文件）
-    - 所有 resource 中的附件文件
+    对应 Nacos Open API 3.4:
+    GET /nacos/v3/client/ai/skills?name=xxx&version=xxx
     """
     logger.info("download_skill_zip: name=%s, version=%s", name, version)
-
     try:
-        detail = client.get_skill_version_detail(name, version)
+        zip_data = client.download_skill_zip(name=name, version=version, namespace_id=namespace_id)
     except NacosNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except NacosAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
-    # 构建 ZIP 内存流
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 添加指令文件
-        instructions = [
-            ("SKILL.md", "config_SKILL__md"),
-            ("AGENTS.md", "config_AGENTS__md"),
-            ("SOUL.md", "config_SOUL__md"),
-            ("IDENTITY.md", "config_IDENTITY__md"),
-        ]
-        for local_name, resource_key in instructions:
-            content = detail.resource.get(resource_key)
-            if content is None:
-                continue
-            if isinstance(content, str):
-                zf.writestr(local_name, content)
-            elif isinstance(content, dict):
-                file_content = content.get("content", "")
-                zf.writestr(local_name, file_content)
-            elif hasattr(content, "content"):
-                zf.writestr(local_name, content.content)
-
-        # 添加所有其他资源文件
-        for resource_key, file_obj in (detail.resource or {}).items():
-            # 跳过已添加的指令文件
-            if resource_key in [k[1] for k in instructions]:
-                continue
-            if file_obj is None:
-                continue
-            content = file_obj if isinstance(file_obj, str) else ""
-            if isinstance(file_obj, dict):
-                content = file_obj.get("content", "")
-            elif hasattr(file_obj, "content"):
-                content = file_obj.content
-            if content:
-                zf.writestr(f"resources/{resource_key}", content)
-
-    # 生成前端文件名（安全化）
     safe_name = "".join(
         c if c.isascii() and (c.isalnum() or c in ('-', '_')) else '_'
         for c in name
     ) or "skill"
-
-    zip_buffer.seek(0)
     return Response(
-        content=zip_buffer.getvalue(),
+        content=zip_data,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}-{version}.zip"',
-        },
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}-{version}.zip"'},
     )
 
 
 @router.get("/skills/{name}/zip", summary="下载 Skill ZIP 包（最新版）")
 def download_skill_zip_latest(name: str, namespace_id: str = "public", client: NacosSkillClient = Depends(get_client)):
-    """下载最新版本的 Skill ZIP 包。"""
+    """下载最新版本的 Skill ZIP 包（不传 version，Nacos 返回 latest）。"""
     logger.info("download_skill_zip_latest: name=%s", name)
-    detail = client.get_skill_detail(name)
-    version = detail.editing_version or (detail.versions[0].version if detail.versions else None)
-    if not version:
-        raise HTTPException(status_code=404, detail=f"Skill {name} 没有可用版本")
-    return download_skill_zip(name, version, namespace_id=namespace_id, client=client)
+    try:
+        zip_data = client.download_skill_zip(name=name, namespace_id=namespace_id)
+    except NacosNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except NacosAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    safe_name = "".join(
+        c if c.isascii() and (c.isalnum() or c in ('-', '_')) else '_'
+        for c in name
+    ) or "skill"
+    return Response(
+        content=zip_data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.zip"'},
+    )
