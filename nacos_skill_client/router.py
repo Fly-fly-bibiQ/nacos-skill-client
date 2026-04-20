@@ -119,6 +119,7 @@ class LLMRouterStrategy(RouterStrategy):
 
     def route(self, skills: list[SkillItem], user_query: str) -> RouteResult:
         skills_list_text = self._build_skills_list(skills)
+        logger.info("LLM route: %d skills, query=%s (first 50 chars)", len(skills), user_query[:50])
         prompt = self.ROUTING_PROMPT.format(skills_list=skills_list_text, user_query=user_query)
 
         messages = [
@@ -127,6 +128,7 @@ class LLMRouterStrategy(RouterStrategy):
         ]
 
         try:
+            logger.debug("LLM route: calling model=%s", self._model)
             response = self.openai_client.chat.completions.create(
                 model=self._model,
                 messages=messages,
@@ -134,7 +136,9 @@ class LLMRouterStrategy(RouterStrategy):
                 max_tokens=self.max_tokens,
             )
             text = response.choices[0].message.content
+            logger.debug("LLM route: raw response=%s", text[:200])
         except Exception as exc:
+            logger.error("LLM route failed (model=%s): %s", self._model, exc, exc_info=True)
             raise RouterError(f"LLM 路由调用失败: {exc}") from exc
 
         return self._parse_response(text)
@@ -195,6 +199,7 @@ class KeywordRouterStrategy(RouterStrategy):
     """
 
     def route(self, skills: list[SkillItem], user_query: str) -> RouteResult:
+        logger.info("Keyword route: %d skills, query=%s", len(skills), user_query[:50])
         best_match: tuple[str, int] | None = None
         query = user_query.lower()
         # 对中文查询，同时按子串匹配
@@ -290,7 +295,14 @@ class SkillRouter:
         user_query: str,
     ) -> RouteResult:
         """执行路由决策。"""
-        return self._strategy.route(skills, user_query)
+        logger.info("SkillRouter.route: strategy=%s, skills=%d, query=%s (first 50 chars)", 
+                    type(self._strategy).__name__, len(skills), user_query[:50])
+        start = time.time()
+        result = self._strategy.route(skills, user_query)
+        took_ms = int((time.time() - start) * 1000)
+        logger.info("SkillRouter.route: done, skill=%s, reason=%s (%dms)", 
+                    result.skill_name or "N/A", result.reason[:80], took_ms)
+        return result
 
     @property
     def strategy(self) -> RouterStrategy:

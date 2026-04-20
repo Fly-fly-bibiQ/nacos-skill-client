@@ -167,6 +167,7 @@ class NacosSkillClient:
     def _login(self, username: str, password: str) -> None:
         """登录 Nacos，获取 Bearer token。"""
         url = f"{self.base_url}/nacos/v1/auth/users/login"
+        logger.info("Nacos login: %s → %s", username, self.base_url)
         try:
             resp = self._session.post(
                 url,
@@ -176,9 +177,10 @@ class NacosSkillClient:
             resp.raise_for_status()
             data = resp.json()
             self._token = data.get("accessToken")
-            logger.info("Nacos login successful as %s", username)
+            logger.info("Nacos login successful as %s (token: %d chars)", username, len(self._token) if self._token else 0)
             return
         except requests.RequestException as exc:
+            logger.error("Nacos login failed: %s", exc)
             raise NacosAuthError(f"登录失败: {exc}") from exc
 
     def _auth_header(self) -> dict[str, str]:
@@ -210,13 +212,16 @@ class NacosSkillClient:
         url = f"{self.base_url}/nacos{path}"
         headers = self._auth_header()
         params = params or {}
+        logger.debug("%s %s%s", method, path, f"?{params}" if params else "")
 
         try:
             resp = self._session.request(
                 method, url, headers=headers, params=params, timeout=self.timeout,
             )
+            logger.debug("%s %s → %d", method, path, resp.status_code)
 
             if resp.status_code == 401:
+                logger.info("Token expired, re-authenticating")
                 # token 过期，重试登录
                 self._login(self._username, self._password)
                 headers = self._auth_header()
@@ -254,17 +259,20 @@ class NacosSkillClient:
 
         Console API 用于获取离线 Skill 的元信息。
         """
+        logger.debug("Console %s %s params=%s", method, path, params)
         url = f"{self.base_url}/nacos{path}"
         headers = {
             "Authorization": f"Bearer {self._token}" if self._token else "",
             "Content-Type": "application/json",
         }
         params = params or {}
+        logger.debug("%s %s%s", method, path, f"?{params}" if params else "")
 
         try:
             resp = self._session.request(
                 method, url, headers=headers, params=params, timeout=self.timeout,
             )
+            logger.debug("%s %s → %d", method, path, resp.status_code)
 
             if resp.status_code == 401:
                 self._login(self._username, self._password)
@@ -334,7 +342,7 @@ class NacosSkillClient:
         """
         if priority is None:
             priority = ['SKILL.md', 'AGENTS.md', 'SOUL.md']
-        
+        logger.info("get_instruction_file: name=%s, version=%s, priority=%s", name, version, priority)
         # 将文件标签映射到资源 key
         file_map = {
             'SKILL.md': 'config_SKILL__md',
@@ -344,6 +352,7 @@ class NacosSkillClient:
         }
 
         # 级别 1: 带 version 获取
+        logger.debug("  Level1: with version")
         for label in priority:
             key = file_map.get(label, label)
             try:
@@ -354,6 +363,7 @@ class NacosSkillClient:
                 return (label, content)
 
         # 级别 2: 不带 version 获取（online 的 Skill）
+        logger.debug("Level2: no version")
         try:
             detail = self.get_skill_detail(name)
         except (NacosNotFoundError, NacosAPIError):
@@ -364,9 +374,11 @@ class NacosSkillClient:
                 key = file_map.get(label, label)
                 content = self._resolve_resource_content(resource_data, key)
                 if content:
+                    logger.info("Level2 matched: %s (%d chars)", label, len(content))
                     return (label, content)
 
         # 级别 3: Console API 获取（offline Skill）
+        logger.debug("  Level3: Console API")
         console_detail = self._get_skill_detail_with_console_api(name)
         if console_detail:
             resource_data = getattr(console_detail, 'resource', {}) or {}
@@ -388,6 +400,7 @@ class NacosSkillClient:
 
         # 级别 4: 返回 None
         logger.warning(
+            "get_instruction_file: ALL LEVELS FAILED name=%s, version=%s",
             "无法获取 Skill 指令文件: name=%s, version=%s (所有回退级别均失败)",
             name, version,
         )
@@ -409,7 +422,7 @@ class NacosSkillClient:
         使用 Client API: GET /nacos/v3/client/ai/agentspecs/search
         """
         params: dict[str, Any] = {
-            "namespaceId": namespace_id or self.namespace_id,
+            "namespaceId": ns,
             "keyword": keyword,
             "pageNo": page_no,
             "pageSize": page_size,
@@ -558,6 +571,7 @@ class NacosSkillClient:
                 )
 
         # 级别 2: 不带 version 获取（online 的 Skill）
+        logger.debug("Level2: no version")
         try:
             detail = self.get_skill_detail(name, namespace_id=namespace_id)
             return self._parse_skill_version_detail_from_data(detail)
@@ -568,6 +582,7 @@ class NacosSkillClient:
             )
 
         # 级别 3: Console API 获取（offline Skill）
+        logger.debug("Level3: Console API")
         try:
             console_detail = self._get_skill_detail_with_console_api(name, namespace_id)
             if console_detail:
@@ -580,6 +595,7 @@ class NacosSkillClient:
 
         # 级别 4: 返回 None
         logger.warning(
+            "get_instruction_file: ALL LEVELS FAILED name=%s, version=%s",
             "无法获取 Skill 详情 (name=%s, version=%s)，所有回退级别均失败",
             name, version or "(any)",
         )

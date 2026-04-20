@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -39,6 +40,7 @@ app.include_router(skills_router)
 
 @app.exception_handler(NacosNotFoundError)
 async def not_found_handler(request: Request, exc: NacosNotFoundError) -> JSONResponse:
+    logger.warning("404 - %s %s: %s", request.method, request.url.path, exc)
     return JSONResponse(
         status_code=404,
         content={"detail": str(exc), "code": exc.code if exc.code else None},
@@ -47,6 +49,7 @@ async def not_found_handler(request: Request, exc: NacosNotFoundError) -> JSONRe
 
 @app.exception_handler(NacosAuthError)
 async def auth_handler(request: Request, exc: NacosAuthError) -> JSONResponse:
+    logger.warning("401 - %s %s: %s", request.method, request.url.path, exc)
     return JSONResponse(
         status_code=401,
         content={"detail": str(exc), "code": exc.code if exc.code else None},
@@ -55,6 +58,7 @@ async def auth_handler(request: Request, exc: NacosAuthError) -> JSONResponse:
 
 @app.exception_handler(NacosAPIError)
 async def api_error_handler(request: Request, exc: NacosAPIError) -> JSONResponse:
+    logger.error("500 - %s %s: %s", request.method, request.url.path, exc)
     return JSONResponse(
         status_code=500,
         content={"detail": str(exc), "code": exc.code if exc.code else None},
@@ -63,6 +67,7 @@ async def api_error_handler(request: Request, exc: NacosAPIError) -> JSONRespons
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    logger.warning("422 - %s %s: validation error", request.method, request.url.path)
     return JSONResponse(
         status_code=422,
         content={"detail": exc.errors()},
@@ -71,11 +76,21 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled exception: %s", exc, exc_info=True)
+    logger.error("500 - %s %s: %s", request.method, request.url.path, exc, exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error"},
     )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """请求日志中间件：记录每个请求的方法、路径、耗时、状态码。"""
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = int((time.time() - start) * 1000)
+    logger.info("%s %s → %d (%dms)", request.method, request.url.path, response.status_code, duration_ms)
+    return response
 
 
 @app.get("/health", tags=["health"])
