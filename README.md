@@ -1,6 +1,60 @@
 # Nacos Skill Registry Python Client
 
-通过 Nacos 3.x AgentSpec API 管理 AI Skills 的 Python 客户端库 + FastAPI 服务。
+通过 Nacos 3.x Client API 管理 AI Skills 的 Python 客户端库 + FastAPI 服务。
+
+## 系统架构
+
+```mermaid
+graph TB
+    subgraph 客户端
+        User[用户]
+        WebUI[Web UI / Swagger]
+        SDK[Python SDK]
+    end
+
+    subgraph Nacos Skill Client API [Nacos Skill Client - FastAPI 服务]
+        API[FastAPI 入口]
+        Deps[依赖注入层<br/>Config / NacosClient / SkillRouter]
+        Router[SkillRouter<br/>策略模式]
+    end
+
+    subgraph 路由决策
+        LLM[LLM API<br/>Qwen3.6-35B-A3B-FP8]
+    end
+
+    subgraph Nacos 服务
+        Nacos[Nacos Skill Registry<br/>Client API + Console API]
+        Skills[186 Skills<br/>AGENTS.md / SOUL.md]
+    end
+
+    User -->|HTTP POST| API
+    WebUI -->|HTTP GET/POST| API
+    SDK -->|Python SDK| Nacos
+
+    API -->|依赖注入| Deps
+    API -->|路由判断| Router
+
+    Router -->|Skills列表+问题| LLM
+    LLM -->|返回skill_name| Router
+
+    Router -->|Skill查询| Nacos
+    Nacos -->|指令文件| Router
+    Router -->|指令+问题| LLM
+    LLM -->|最终回复| API
+
+    Router -.->|回退查询| Nacos
+    Nacos -.->|离线Skill元信息| Router
+
+    API -->|SSE流式输出| User
+
+    subgraph 配置层
+        YAML[default.yaml]
+        Env[环境变量 NACOS_SKILL_*]
+    end
+
+    Deps -->|优先级覆盖| YAML
+    Deps -->|优先级覆盖| Env
+```
 
 ## 新增功能 (v0.2)
 
