@@ -99,12 +99,11 @@ def chat_stream(
 
     llm = create_llm_client(config.llm.base_url, config.llm.api_key, config.llm.timeout)
     llm_lc = ChatOpenAI(
-        openai_api_key=config.llm.api_key,
-        openai_base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
+        base_url=config.llm.base_url,
         model=config.llm.model,
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
-        timeout=config.llm.timeout,
     )
     skill_router = SkillRouter.create_llm(
         llm,

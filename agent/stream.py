@@ -49,9 +49,8 @@ class AgentState(dict):
 def discover(state: AgentState, client: Any, config: Any) -> AgentState:
     """从 Nacos 发现可用 Skills。"""
     items = client.get_all_skills()[: config.router.max_skills_for_routing]
-    skills = [{"name": s.name, "description": s.description or ""} for s in items]
-    logger.info("graph: discovered %d skills", len(skills))
-    return AgentState({"_skills": skills})
+    logger.info("graph: discovered %d skills", len(items))
+    return AgentState({"_skills": items})
 
 
 def route(state: AgentState, router: Any, user_message: str) -> AgentState:
@@ -199,7 +198,8 @@ def stream_agent_response(
     logger.info("stream: discovered %d skills", len(skills))
     yield {"event": "discovered", "data": json.dumps({
         "count": len(skills),
-        "skills": skills,
+        "skills": [{"name": s.name, "description": getattr(s, "description", "")}
+                    for s in skills],
     }, ensure_ascii=False)}
 
     # Step 2: Route
@@ -239,7 +239,7 @@ def stream_agent_response(
             ),
         ]
 
-        _stream_llm_content(messages, llm, config, yield_func=lambda text: yield_sse("content", text))
+        _stream_llm_content(messages, llm, config)
     else:
         # ── Step 3 (bypass): Direct LLM ──
         logger.info("stream: no skill matched, direct LLM call")
@@ -250,11 +250,11 @@ def stream_agent_response(
         _stream_llm_content(
             [HumanMessage(content=user_message)],
             llm, config,
-            yield_func=lambda text: yield_sse("content", text),
         )
 
     # ── Done ──
-    yield_sse("done", json.dumps({"status": "complete"}))
+    for evt in _final_sse("done", json.dumps({"status": "complete"})):
+        yield evt
 
 
 def _build_injected_graph(
@@ -287,7 +287,7 @@ def _build_injected_graph(
     return g.compile()
 
 
-def _stream_llm_content(messages: list, llm: Any, config: Any, yield_func):
+def _stream_llm_content(messages: list, llm: Any, config: Any):
     """流式调用 LLM 并 yield content chunks。"""
     resp = llm.stream(
         messages,
@@ -296,9 +296,9 @@ def _stream_llm_content(messages: list, llm: Any, config: Any, yield_func):
     )
     for chunk in resp:
         if chunk.content:
-            yield_func(chunk.content)
+            yield {"event": "content", "data": chunk.content}
 
 
-def yield_sse(event: str, data: str):
-    """产生一个 SSE 事件（全局 yield 辅助）。"""
+def _final_sse(event: str, data: str) -> Iterator[dict[str, Any]]:
+    """产生一个一次性 SSE 事件（用于 done 等单次事件）。"""
     yield {"event": event, "data": data}
