@@ -15,6 +15,7 @@ from nacos_skill_client.config import Config
 from nacos_skill_client.exceptions import NacosAPIError, NacosAuthError, NacosNotFoundError
 
 from .routes import router as skills_router
+from .compat_routes import router as compat_router
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(skills_router)
+app.include_router(compat_router)
 
 
 @app.exception_handler(NacosNotFoundError)
