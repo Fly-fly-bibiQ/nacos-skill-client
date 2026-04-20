@@ -161,12 +161,16 @@ class SkillDetail(BaseModel):
     支持两种 API 返回格式：
     - Console API（带 version）：包含 versions 列表和 resource 对象
     - Client API（不带 version）：直接包含 content 和 resource 字段
+
+    frontmatter 优先级高于 description 字段。
     """
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     namespace_id: str = Field(default="", alias="namespaceId")
     name: str = Field(default="")
     description: str = Field(default="")
+    # frontmatter 提取的元信息（优先级高于 description）
+    frontmatter: dict[str, str] = Field(default_factory=dict, description="从 AGENTS.md frontmatter 提取的 name/description")
     scope: str = Field(default="")
     enable: bool = Field(default=True)
     status: str = Field(default="", description="在线状态 (online/offline)")
@@ -209,6 +213,11 @@ class SkillDetail(BaseModel):
     def _v_enable(cls, v: Any) -> bool:
         return v if isinstance(v, bool) else True
 
+    @field_validator("frontmatter", mode="before")
+    @classmethod
+    def validate_frontmatter(cls, v: Any) -> dict[str, str]:
+        return _safe_dict(v) if v else {}
+
     @field_validator("versions", mode="before")
     @classmethod
     def validate_versions(cls, v: Any) -> list[SkillVersionInfo]:
@@ -240,12 +249,16 @@ class SkillVersionDetail(BaseModel):
     支持两种来源的返回格式：
     - 带 version 参数的 API 返回
     - 不带 version 参数的 API 回退格式（与 SkillDetail 结构相同）
+
+    frontmatter 优先级高于 description 字段。
     """
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     name: str = Field(default="")
     namespace_id: str = Field(default="", alias="namespaceId")
     description: str = Field(default="")
+    # frontmatter 提取的元信息（优先级高于 description）
+    frontmatter: dict[str, str] = Field(default_factory=dict, description="从 AGENTS.md frontmatter 提取的 name/description")
     status: str = Field(default="", description="在线状态 (online/offline)")
     content: str = Field(default="")
     resource: dict[str, SkillResourceFile] = Field(default_factory=dict)
@@ -268,6 +281,11 @@ class SkillVersionDetail(BaseModel):
     def _v_bt(cls, v: Any) -> str:
         return v or ""
 
+    @field_validator("frontmatter", mode="before")
+    @classmethod
+    def validate_frontmatter(cls, v: Any) -> dict[str, str]:
+        return _safe_dict(v) if v else {}
+
     @field_validator("resource", mode="before")
     @classmethod
     def validate_resource(cls, v: Any) -> dict[str, SkillResourceFile]:
@@ -285,6 +303,17 @@ class SkillVersionDetail(BaseModel):
 # --------------------------------------------------------------------------- #
 # 路由相关模型
 # --------------------------------------------------------------------------- #
+
+
+class SkillBrief(BaseModel):
+    """Skill 简要信息（用于路由，仅 name + description，节省 token）。
+
+    从 frontmatter 提取 name/description，回退到 SkillDetail/SkillVersionDetail 字段。
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str = Field(default="", description="Skill 名称")
+    description: str = Field(default="", description="Skill 描述")
 
 
 class RouteResult(BaseModel):

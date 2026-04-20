@@ -34,11 +34,11 @@ graph TB
     API -->|依赖注入| Deps
     API -->|路由判断| Router
 
-    Router -->|Skills列表+问题| LLM
+    Router -->|Skills name+description<br/>+ 问题| LLM
     LLM -->|返回skill_name| Router
 
-    Router -->|Skill查询| Nacos
-    Nacos -->|指令文件| Router
+    Router -->|Skill查询<br/>含 frontmatter 解析| Nacos
+    Nacos -->|指令文件+frontmatter| Router
     Router -->|指令+问题| LLM
     LLM -->|最终回复| API
 
@@ -54,6 +54,19 @@ graph TB
 
     Deps -->|优先级覆盖| YAML
     Deps -->|优先级覆盖| Env
+
+    %% 资源结构改进标注
+    FM1[AGENTS.md 内容] -. 1. frontmatter 解析 .-> FM2{frontmatter?<br/>name + description}
+    FM2 -- 是 --> FM3[仅传 name/description<br/>节省 token]
+    FM2 -- 否 --> FM4[回退到 description<br/>字段]
+    FM3 --> Router
+    FM4 --> Router
+
+    %% 四级回退策略标注
+    RET1[级别1: 带version获取] -. 回退 .-> RET2[级别2: 不带version获取]
+    RET2 -. 回退 .-> RET3[级别3: Console API]
+    RET3 -. 回退 .-> RET4[级别4: 返回None]
+    RET1 --> Router
 ```
 
 ## 新增功能 (v0.2)
