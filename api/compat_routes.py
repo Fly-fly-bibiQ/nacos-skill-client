@@ -15,6 +15,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends
+from langchain_openai import ChatOpenAI
 from sse_starlette.sse import EventSourceResponse
 
 from nacos_skill_client.client import NacosSkillClient
