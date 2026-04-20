@@ -338,15 +338,62 @@ pip install -e ".[dev]"
 uvicorn api.main:app --host 0.0.0.0 --port 8899 --reload
 ```
 
-### 前端
+### 前端配置
+
+前端通过 `VITE_API_BASE_URL` 环境变量控制后端地址，默认空字符串表示使用相对路径（即由 Vite proxy 转发）。
+
+**配置文件**：`web/vite.config.ts`
+
+```ts
+// web/vite.config.ts
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8899',  // ← 后端地址
+        changeOrigin: true,
+      },
+    },
+  },
+})
+```
+
+**环境变量**：`web/.env` 或 `web/.env.development`（可选）
+
+```bash
+# 开发环境 — 使用 Vite proxy（默认，无需配置）
+# VITE_API_BASE_URL=  # 留空或使用相对路径 ""
+
+# 生产环境 — 直接连接后端地址
+# VITE_API_BASE_URL=http://your-server.com:8899
+```
+
+**前端 API 调用列表**：
+
+| API 路径 | 前端调用位置 | 说明 |
+|----------|-------------|------|
+| `GET /api/skills` | `App.tsx` — 页面加载时 | 获取 Skills 列表，返回 `{skills: [{name, description, path}]}` |
+| `GET /api/prompt` | `App.tsx` — 发送 `/prompt` 命令时 | 获取 System Prompt，返回 `{prompt: "..."}` |
+| `GET /api/chat/stream` | `lib/sse.ts` — 发送消息时 | SSE 流式聊天，事件类型: `thinking/text/tool_call/tool_result/done/agent_error` |
+
+**SSE 事件解析**：前端 `lib/sse.ts` 监听以下事件类型：
+```typescript
+const STREAM_EVENT_TYPES = [
+  "thinking", "text", "tool_call", "tool_result", "done", "agent_error"
+];
+```
+
+### 启动前端
 
 ```bash
 cd web
 
-# 安装依赖（需要 NODE_ENV=development）
+# 安装依赖（需要 NODE_ENV=development，否则 devDeps 不安装）
 NODE_ENV=development npm install
 
-# 启动开发服务器（端口 5173）
+# 开发服务器（端口 5173）
 npm run dev
 # 访问 http://localhost:5173
 
@@ -357,14 +404,25 @@ npm run build
 ### 完整启动顺序
 
 ```bash
-# 终端 1: 启动后端
-uvicorn api.main:app --host 0.0.0.0 --port 8899
+# 终端 1: 启动后端（端口 8899）
+python3 -m uvicorn api.main:app --host 0.0.0.0 --port 8899 --reload
+# Swagger UI: http://localhost:8899/docs
 
-# 终端 2: 启动前端
+# 终端 2: 启动前端（端口 5173）
 cd web && npm run dev
+# 访问 http://localhost:5173
+
+# 前端通过 Vite proxy 将 /api/* 转发到后端 8899
 ```
 
-前端通过 Vite proxy 将 `/api/*` 请求转发到后端。
+### 端口说明
+
+| 端口 | 服务 | 说明 |
+|------|------|------|
+| 5173 | 前端 (Vite) | 开发服务器，React SPA |
+| 8899 | 后端 (FastAPI) | API 服务，Swagger UI 在 `/docs` |
+| 8848 | Nacos | 服务注册中心（配置在 `config/default.yaml`） |
+| 8000 | LLM (vLLM) | 模型服务（配置在 `config/default.yaml`） |
 
 ## 目录结构
 
