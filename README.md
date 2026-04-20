@@ -55,17 +55,17 @@ graph TB
     Deps -->|优先级覆盖| YAML
     Deps -->|优先级覆盖| Env
 
-    %% 资源结构改进标注
-    FM1[AGENTS.md 内容] -. 1. frontmatter 解析 .-> FM2{frontmatter?<br/>name + description}
-    FM2 -- 是 --> FM3[仅传 name/description<br/>节省 token]
-    FM2 -- 否 --> FM4[回退到 description<br/>字段]
+    %% frontmatter 解析流程
+    FM1[AGENTS.md 内容] --> FM2{frontmatter?}
+    FM2 -- 是 --> FM3[仅传 name+description<br/>节省 token]
+    FM2 -- 否 --> FM4[回退 description 字段]
     FM3 --> Router
     FM4 --> Router
 
-    %% 四级回退策略标注
-    RET1[级别1: 带version获取] -. 回退 .-> RET2[级别2: 不带version获取]
-    RET2 -. 回退 .-> RET3[级别3: Console API]
-    RET3 -. 回退 .-> RET4[级别4: 返回None]
+    %% 四级回退策略
+    RET1[级别1: 带 version] --> RET2[级别2: 无 version]
+    RET2 --> RET3[级别3: Console API]
+    RET3 --> RET4[级别4: 返回 None]
     RET1 --> Router
 ```
 
