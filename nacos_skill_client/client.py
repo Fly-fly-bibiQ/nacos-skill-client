@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -67,6 +68,33 @@ def _parse_skill_list_result(raw: dict[str, Any]) -> SkillListResult:
         pages_available=raw.get("pagesAvailable", 0) if isinstance(raw, dict) else 0,
         page_items=items,
     )
+
+
+def _parse_frontmatter(content: str) -> dict[str, str]:
+    """从 Markdown 内容中提取 YAML frontmatter 的 name/description。
+
+    Args:
+        content: Markdown 文档内容。
+
+    Returns:
+        dict 包含 name/description，未找到 frontmatter 返回空 dict。
+    """
+    if not content:
+        return {}
+    match = re.match(r'^---\s*\n(.*?)\n---\s*\n?', content, re.DOTALL)
+    if not match:
+        return {}
+    fm_content = match.group(1)
+    result: dict[str, str] = {}
+    for line in fm_content.split('\n'):
+        line = line.strip()
+        if ':' in line:
+            key, _, value = line.partition(':')
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key in ('name', 'description'):
+                result[key] = value
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -648,7 +676,12 @@ class NacosSkillClient:
 
         Client API 不带 version 参数时，返回的 data 直接包含 content 和 resource
         字段，而不是嵌套在 versions 列表中。
+
+        从 content 中提取 frontmatter，优先于 description 字段。
         """
+        # 从 content 中提取 frontmatter
+        frontmatter = _parse_frontmatter(detail.content)
+
         # 将 SkillDetail 的 content 和 resource 转为 SkillVersionDetail
         resource_data = getattr(detail, 'resource', {})
         # 确保 resource 是 dict[str, SkillResourceFile]
@@ -673,6 +706,7 @@ class NacosSkillClient:
             content=detail.content,
             resource=resource_data,
             biz_tags=detail.biz_tags,
+            frontmatter=frontmatter,
         )
 
     def delete_skill(self, name: str, namespace_id: str | None = None) -> bool:
@@ -685,7 +719,7 @@ class NacosSkillClient:
     # ------------------------------------------------------------------ #
 
     def get_skill_md(self, name: str, version: str | None = None,
-                     namespace_id: str | None = None) -> str | None:
+                     namespace_id: str | None = None) -> dict[str, Any] | None:
         """获取 SKILL.md 内容。
 
         使用四级回退策略：
@@ -695,33 +729,51 @@ class NacosSkillClient:
         4. 返回 None
 
         Returns:
-            SKILL.md 内容，失败返回 None。
+            {"content": str, "frontmatter": {"name": str, "description": str}} 或 None。
         """
         result = self.get_instruction_file(name, version or "", priority=['SKILL.md'])
         if result:
-            return result[1]
+            content = result[1]
+            return {
+                "content": content,
+                "frontmatter": _parse_frontmatter(content),
+            }
         return None
 
     def get_agents_md(self, name: str, version: str | None = None,
-                      namespace_id: str | None = None) -> str | None:
+                      namespace_id: str | None = None) -> dict[str, Any] | None:
         """获取 AGENTS.md 内容。
 
         使用四级回退策略，失败返回 None。
+
+        Returns:
+            {"content": str, "frontmatter": {"name": str, "description": str}} 或 None。
         """
         result = self.get_instruction_file(name, version or "", priority=['AGENTS.md'])
         if result:
-            return result[1]
+            content = result[1]
+            return {
+                "content": content,
+                "frontmatter": _parse_frontmatter(content),
+            }
         return None
 
     def get_soul_md(self, name: str, version: str | None = None,
-                    namespace_id: str | None = None) -> str | None:
+                    namespace_id: str | None = None) -> dict[str, Any] | None:
         """获取 SOUL.md 内容。
 
         使用四级回退策略，失败返回 None。
+
+        Returns:
+            {"content": str, "frontmatter": {"name": str, "description": str}} 或 None。
         """
         result = self.get_instruction_file(name, version or "", priority=['SOUL.md'])
         if result:
-            return result[1]
+            content = result[1]
+            return {
+                "content": content,
+                "frontmatter": _parse_frontmatter(content),
+            }
         return None
 
     def _resolve_resource_content(self, resource: dict, key: str) -> str | None:

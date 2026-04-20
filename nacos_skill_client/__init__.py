@@ -18,6 +18,7 @@ from nacos_skill_client.exceptions import (
     NacosVersionError,
 )
 from nacos_skill_client.models import (
+    SkillBrief,
     SkillDetail,
     SkillItem,
     SkillListResult,
@@ -36,6 +37,7 @@ __all__ = [
     "SkillVersionInfo",
     "SkillVersionDetail",
     "SkillResourceFile",
+    "SkillBrief",
     # Exceptions
     "NacosSkillError",
     "NacosAuthError",

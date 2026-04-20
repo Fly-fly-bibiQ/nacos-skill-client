@@ -62,7 +62,8 @@ class RouterStrategy(ABC):
 class LLMRouterStrategy(RouterStrategy):
     """基于 LLM 的路由策略。
 
-    将 Skills 列表 + 用户问题发给 LLM，让 LLM 判断应使用哪个 Skill。
+    将 Skills 简要信息（name + description）+ 用户问题发给 LLM，让 LLM 判断应使用哪个 Skill。
+    仅传输 name + description 以节省 token。
     """
 
     ROUTING_PROMPT = (
@@ -73,13 +74,29 @@ class LLMRouterStrategy(RouterStrategy):
         "2. 从可用的 Skill 列表中找出最匹配的一个\n"
         "3. 如果不需要任何 Skill 也能回答问题，返回 null\n"
         "\n"
+        "【正面示例 — 需要使用 Skill 的场景】\n"
+        "- 需要生成、修改、审查代码 → 使用代码类 Skill\n"
+        "- 需要安全审计 → 使用安全审计 Skill\n"
+        "- 需要搜索云文档 → 使用文档搜索 Skill\n"
+        "- 需要日历/日程管理 → 使用日历 Skill\n"
+        "- 需要任务管理 → 使用任务 Skill\n"
+        "- 需要浏览器自动化 → 使用浏览器 Skill\n"
+        "\n"
+        "【负面示例 — 不需要使用 Skill 的场景】\n"
+        "- 通用翻译（没有专门的翻译 Skill）→ 返回 null\n"
+        "- 简单的聊天、寒暄 → 返回 null\n"
+        "- 通用知识问答（天气、常识等，除非有对应 Skill）→ 返回 null\n"
+        "- 简单数学计算 → 返回 null\n"
+        "- 文本摘要（如果没有专门的摘要 Skill）→ 返回 null\n"
+        "- 用户问题与所有 Skill 的描述都不相关 → 返回 null\n"
+        "\n"
         "请严格按照以下 JSON 格式返回，不要包含任何 Markdown 代码块标记、\n"
         "不要包含反引号、不要包含任何其他文字：\n"
         "{{'skill_name': null, 'reason': '简要说明原因'}}\n"
         "\n"
         "注意：字段名必须是 skill_name 和 reason，不能是 skill 或其他名称。\n"
         "\n"
-        "可用的 Skill 列表：\n"
+        "可用的 Skill 列表（仅包含 name 和 description）：\n"
         "{skills_list}\n"
         "\n"
         "用户问题：\n"
@@ -125,11 +142,9 @@ class LLMRouterStrategy(RouterStrategy):
     def _build_skills_list(self, skills: list[SkillItem]) -> str:
         if not skills:
             return "（暂无可用 Skill）"
-        lines = [f"共 {len(skills)} 个可用 Skill："]
+        lines = [f"共 {len(skills)} 个可用 Skill（仅显示 name 和 description）："]
         for i, s in enumerate(skills, 1):
-            labels = f" | 标签: {s.labels}" if s.labels else ""
-            version = f" [{s.editing_version}]" if s.editing_version else ""
-            lines.append(f"  {i}. {s.name}{version}: {s.description}{labels}")
+            lines.append(f'  {i}. name: "{s.name}" - description: "{s.description}"')
         return "\n".join(lines)
 
     @staticmethod
