@@ -87,7 +87,11 @@ def list_skills(
     page_size: int = 50,
     client: NacosSkillClient = Depends(get_client),
 ):
-    result = client.list_skills(namespace_id=namespace_id, page_no=page_no, page_size=page_size)
+    try:
+        result = client.list_skills(namespace_id=namespace_id, page_no=page_no, page_size=page_size)
+    except Exception as exc:
+        logger.error("list_skills: unexpected error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
     logger.info("list_skills: page %d/%d, count=%d, total=%d", page_no, result.pages_available, len(result.page_items), result.total_count)
     return {
         "total_count": result.total_count,
