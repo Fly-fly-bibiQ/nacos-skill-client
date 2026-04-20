@@ -326,6 +326,46 @@ pytest tests/ -v
 # 75 个测试用例全部通过
 ```
 
+## 本地开发
+
+### 后端
+
+```bash
+# 安装依赖
+pip install -e ".[dev]"
+
+# 启动 FastAPI 服务（端口 8899，Swagger UI: http://localhost:8899/docs）
+uvicorn api.main:app --host 0.0.0.0 --port 8899 --reload
+```
+
+### 前端
+
+```bash
+cd web
+
+# 安装依赖（需要 NODE_ENV=development）
+NODE_ENV=development npm install
+
+# 启动开发服务器（端口 5173）
+npm run dev
+# 访问 http://localhost:5173
+
+# 生产构建
+npm run build
+```
+
+### 完整启动顺序
+
+```bash
+# 终端 1: 启动后端
+uvicorn api.main:app --host 0.0.0.0 --port 8899
+
+# 终端 2: 启动前端
+cd web && npm run dev
+```
+
+前端通过 Vite proxy 将 `/api/*` 请求转发到后端。
+
 ## 目录结构
 
 ```
@@ -339,21 +379,33 @@ nacos-skill-client/
 │   ├── config.py            # 配置管理（Pydantic-settings + YAML）
 │   ├── router.py            # Skill 路由（策略 + 工厂模式 + 改进 Prompt）
 │   └── utils.py             # LLM 调用封装
+├── agent/
+│   ├── __init__.py
+│   └── stream.py            # LangGraph StateGraph 流式 Agent（5 个节点）
 ├── api/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI 入口
-│   ├── routes.py            # 路由定义 + SSE 流式（含缓存集成）
+│   ├── routes.py            # 路由定义 + SSE 流式
+│   ├── compat_routes.py     # 前端兼容适配器（映射事件格式）
 │   ├── schemas.py           # Pydantic 请求/响应模型
 │   └── dependencies.py      # 依赖注入（含 SkillCache 集成）
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py          # 共享 fixtures
-│   ├── test_cache.py        # 缓存测试（24 个用例）
-│   ├── test_config.py       # 配置测试
-│   ├── test_extract_body.py # frontmatter 提取测试
-│   ├── test_models.py       # 模型测试
-│   ├── test_router.py       # 路由测试（含 prompt 测试）
-│   └── test_utils.py        # 工具测试
+│   ├── test_cache.py        # 缓存测试（23 个用例）
+│   ├── test_config.py       # 配置测试（13 个用例）
+│   ├── test_extract_body.py # frontmatter 提取测试（5 个用例）
+│   ├── test_models.py       # 模型测试（11 个用例）
+│   ├── test_router.py       # 路由测试（13 个用例）
+│   └── test_utils.py        # 工具测试（4 个用例）
+├── web/                     # React + TypeScript 前端 Web UI
+│   ├── src/
+│   │   ├── components/      # ChatTimeline, Composer, SkillPanel, ToolCallItem
+│   │   ├── lib/sse.ts       # EventSource SSE 客户端
+│   │   ├── state/chatReducer.ts  # 状态管理
+│   │   └── types/events.ts     # 事件类型定义
+│   ├── vite.config.ts       # Vite 配置（/api proxy）
+│   └── package.json
 ├── config/
 │   └── default.yaml         # 默认配置
 ├── examples/
@@ -380,6 +432,40 @@ nacos-skill-client/
 ### RouteResult
 - `skill_name`: 推荐的 Skill 名称，null 表示不需要任何 Skill
 - `reason`: 推荐理由
+
+## LangGraph 架构
+
+Graph 流程：`START → discover → route → (activate | execute_direct) → END`
+
+### 节点（5 个独立函数）
+
+| 节点 | 功能 | 输出 |
+|------|------|------|
+| `discover` | 从 Nacos 发现可用 Skills | Skills 列表 |
+| `route` | LLM 路由决策，选中最匹配的 Skill | skill_name + reason |
+| `activate` | 加载 Skill 指令文件（缓存优先，Nacos 回退） | 指令内容（最大 8000 字符截断） |
+| `execute_with_skill` | 用 Skill 指令 + 用户问题调 LLM | 流式回复 |
+| `execute_direct` | 无 Skill 时直接调 LLM | 流式回复 |
+
+### SSE 事件流
+
+```
+discovered → skill_selected / no_skill → instruction_loaded → content* → done
+```
+
+### 事件映射（前端兼容）
+
+`api/compat_routes.py` 将 LangGraph 事件映射为前端期望格式：
+
+| LangGraph 事件 | 前端事件 |
+|----------------|----------|
+| `discovered` | `discovered` |
+| `skill_selected` | `tool_call` (tool_name=load_skill) |
+| `no_skill` | `no_tool_use` |
+| `instruction_loaded` | `tool_result` |
+| `content` | `text` |
+| `done` | `done` |
+| `error` | `error` |
 
 ## 借鉴设计
 
