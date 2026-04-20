@@ -83,6 +83,23 @@ class RouterConfig(BaseModel):
     )
 
 
+class SkillLoaderConfig(BaseModel):
+    """Skill Loader 配置（借鉴 skills-agent-proto 的三层加载机制）。
+
+    Level 1: scan_skills_metadata() — 启动时解析 frontmatter（name+description）
+    Level 2: load_skill_metadata() — 按需加载完整 SKILL.md 指令内容
+    Level 3: LLM 从指令中自己发现脚本
+    """
+
+    file_priority: list[str] = Field(
+        default_factory=lambda: ["SKILL.md", "AGENTS.md", "SOUL.md"],
+        description="指令文件获取优先级",
+    )
+    max_metadata_count: int = Field(default=200, ge=1, description="元数据发现最大数量")
+    cache_metadata: bool = Field(default=True, description="是否缓存已扫描的元数据")
+    metadata_cache_ttl_minutes: int = Field(default=60, ge=1, description="元数据缓存过期时间（分钟）")
+
+
 class PaginationConfig(BaseModel):
     """分页配置。"""
 
@@ -97,6 +114,14 @@ class APIConfig(BaseModel):
     port: int = Field(default=8899, ge=1, le=65535, description="API 监听端口")
     reload: bool = Field(default=False, description="开发模式自动重载")
     log_level: str = Field(default="info", description="日志级别")
+
+
+class CacheConfig(BaseModel):
+    """本地缓存配置。"""
+
+    enabled: bool = Field(default=True, description="是否启用本地缓存")
+    dir: str = Field(default=".skill_cache", description="缓存目录")
+    ttl_days: int = Field(default=7, ge=1, description="缓存有效期（天）")
 
 
 class LoggingConfig(BaseModel):
@@ -136,7 +161,9 @@ class Config(BaseSettings):
     nacos: NacosConfig = Field(default_factory=NacosConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     router: RouterConfig = Field(default_factory=RouterConfig)
+    skill_loader: SkillLoaderConfig = Field(default_factory=SkillLoaderConfig)
     pagination: PaginationConfig = Field(default_factory=PaginationConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 

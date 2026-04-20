@@ -64,15 +64,22 @@ class LLMRouterStrategy(RouterStrategy):
 
     将 Skills 简要信息（name + description）+ 用户问题发给 LLM，让 LLM 判断应使用哪个 Skill。
     仅传输 name + description 以节省 token。
+
+    借鉴 skills-agent-proto 的 build_system_prompt() 设计：
+    - 只传 SkillMetadata（name + description），不传完整 description
+    - 增加正面/负面示例指导 LLM 决策
+    - 输出格式更严格（要求 JSON）
     """
 
-    ROUTING_PROMPT = (
-        "你是一个 Skill 路由助手。\n"
+    SYSTEM_PROMPT = (
+        "你是一个 Skill 路由助手。你的任务是根据用户查询，从可用 Skill 列表中\n"
+        "选择最匹配的一个 Skill，或者返回 null 表示不需要任何 Skill。\n"
         "\n"
-        "你的任务：\n"
-        "1. 分析用户的意图\n"
-        "2. 从可用的 Skill 列表中找出最匹配的一个\n"
-        "3. 如果不需要任何 Skill 也能回答问题，返回 null\n"
+        "【输出格式要求】\n"
+        "- 只返回纯 JSON，不要包含 Markdown 代码块标记（```）\n"
+        "- 不要包含反引号、不要包含任何其他文字\n"
+        "- JSON 格式必须是: {\"skill_name\": null, \"reason\": \"简要原因\"}\n"
+        "- skill_name 必须是可用的 Skill 名称之一，或 null\n"
         "\n"
         "【正面示例 — 需要使用 Skill 的场景】\n"
         "- 需要生成、修改、审查代码 → 使用代码类 Skill\n"
@@ -81,6 +88,8 @@ class LLMRouterStrategy(RouterStrategy):
         "- 需要日历/日程管理 → 使用日历 Skill\n"
         "- 需要任务管理 → 使用任务 Skill\n"
         "- 需要浏览器自动化 → 使用浏览器 Skill\n"
+        "- 需要文件上传/下载 → 使用文件管理类 Skill\n"
+        "- 需要多维表格操作 → 使用多维表格 Skill\n"
         "\n"
         "【负面示例 — 不需要使用 Skill 的场景】\n"
         "- 通用翻译（没有专门的翻译 Skill）→ 返回 null\n"
@@ -89,21 +98,16 @@ class LLMRouterStrategy(RouterStrategy):
         "- 简单数学计算 → 返回 null\n"
         "- 文本摘要（如果没有专门的摘要 Skill）→ 返回 null\n"
         "- 用户问题与所有 Skill 的描述都不相关 → 返回 null\n"
-        "\n"
-        "请严格按照以下 JSON 格式返回，不要包含任何 Markdown 代码块标记、\n"
-        "不要包含反引号、不要包含任何其他文字：\n"
-        "{{'skill_name': null, 'reason': '简要说明原因'}}\n"
-        "\n"
-        "注意：字段名必须是 skill_name 和 reason，不能是 skill 或其他名称。\n"
-        "\n"
+        "- 通用编程问题但没有代码 Skill → 返回 null\n"
+    )
+
+    USER_PROMPT = (
         "可用的 Skill 列表（仅包含 name 和 description）：\n"
         "{skills_list}\n"
         "\n"
         "用户问题：\n"
         "{user_query}\n"
     )
-
-    SYSTEM_PROMPT = "你是一个 Skill 路由助手。只返回 JSON，不要包含 Markdown 代码块标记。"
 
     def __init__(
         self,
@@ -120,11 +124,11 @@ class LLMRouterStrategy(RouterStrategy):
     def route(self, skills: list[SkillItem], user_query: str) -> RouteResult:
         skills_list_text = self._build_skills_list(skills)
         logger.info("LLM route: %d skills, query=%s (first 50 chars)", len(skills), user_query[:50])
-        prompt = self.ROUTING_PROMPT.format(skills_list=skills_list_text, user_query=user_query)
+        user_prompt = self.USER_PROMPT.format(skills_list=skills_list_text, user_query=user_query)
 
         messages = [
             {"role": "system", "content": self.SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_prompt},
         ]
 
         try:

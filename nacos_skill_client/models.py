@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -46,6 +48,43 @@ def _ts_to_datetime(ts: int) -> datetime | None:
         return datetime.fromtimestamp(ts / 1000)
     except (OSError, ValueError):
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Skill 元数据（Level 1 — 轻量级发现）
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class SkillMetadata:
+    """Skill 元数据（Level 1）。
+
+    轻量级数据类，仅包含 name / description / path。
+    用于系统 prompt 注入和路由发现，不加载完整内容。
+    类似 skills-agent-proto 的 SkillMetadata 设计。
+    """
+
+    name: str               # Skill 唯一名称
+    description: str        # 何时使用此 Skill 的描述
+    skill_path: Path        # Skill 文件路径
+
+    def to_prompt_line(self) -> str:
+        """生成 system prompt 中的单行描述。"""
+        return f"- **{self.name}**: {self.description}"
+
+
+@dataclass
+class SkillContent:
+    """Skill 完整内容（Level 2 — 按需加载）。
+
+    包含 metadata + instructions（SKILL.md body 内容）。
+    只返回 instructions，不收集 scripts 列表，
+    让 LLM 从指令中自己发现脚本。
+    类似 skills-agent-proto 的 SkillContent 设计。
+    """
+
+    metadata: SkillMetadata
+    instructions: str  # SKILL.md body 内容
 
 
 # --------------------------------------------------------------------------- #

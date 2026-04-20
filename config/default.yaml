@@ -46,12 +46,35 @@ router:
     - "AGENTS.md"
     - "SOUL.md"
 
+# Skill Loader 配置（借鉴 skills-agent-proto 的三层加载机制）
+skill_loader:
+  # 指令文件优先级
+  file_priority:
+    - "SKILL.md"
+    - "AGENTS.md"
+    - "SOUL.md"
+  # 元数据发现最大数量
+  max_metadata_count: 200
+  # 缓存已扫描的元数据（避免重复扫描）
+  cache_metadata: true
+  # 缓存过期时间（分钟）
+  metadata_cache_ttl_minutes: 60
+
 # API 服务配置
 api:
   host: "0.0.0.0"
   port: 8899
   reload: false
   log_level: "info"
+
+# 本地 Skill 缓存配置
+cache:
+  # 是否启用本地缓存
+  enabled: true
+  # 缓存目录
+  dir: ".skill_cache"
+  # 缓存有效期（天），超过此时间的缓存会被标记为过期
+  ttl_days: 7
 
 # 日志配置
 logging:

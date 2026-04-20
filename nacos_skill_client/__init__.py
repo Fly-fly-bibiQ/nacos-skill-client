@@ -9,6 +9,7 @@
 - 支持上下文管理器 (with 语句)
 """
 
+from nacos_skill_client.cache import SkillCache
 from nacos_skill_client.client import NacosSkillClient
 from nacos_skill_client.exceptions import (
     NacosAPIError,
@@ -19,9 +20,11 @@ from nacos_skill_client.exceptions import (
 )
 from nacos_skill_client.models import (
     SkillBrief,
+    SkillContent,
     SkillDetail,
     SkillItem,
     SkillListResult,
+    SkillMetadata,
     SkillResourceFile,
     SkillVersionDetail,
     SkillVersionInfo,
@@ -30,6 +33,8 @@ from nacos_skill_client.models import (
 __all__ = [
     # Client
     "NacosSkillClient",
+    # Cache
+    "SkillCache",
     # Models
     "SkillItem",
     "SkillListResult",
@@ -38,6 +43,8 @@ __all__ = [
     "SkillVersionDetail",
     "SkillResourceFile",
     "SkillBrief",
+    "SkillMetadata",
+    "SkillContent",
     # Exceptions
     "NacosSkillError",
     "NacosAuthError",

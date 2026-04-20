@@ -18,6 +18,7 @@ from typing import Any
 
 import requests
 
+from nacos_skill_client.cache import SkillCache
 from nacos_skill_client.config import Config
 from nacos_skill_client.exceptions import (
     NacosAPIError,
@@ -27,9 +28,11 @@ from nacos_skill_client.exceptions import (
     NacosVersionError,
 )
 from nacos_skill_client.models import (
+    SkillContent,
     SkillDetail,
     SkillItem,
     SkillListResult,
+    SkillMetadata,
     SkillResourceFile,
     SkillVersionDetail,
     SkillVersionInfo,
@@ -97,6 +100,26 @@ def _parse_frontmatter(content: str) -> dict[str, str]:
     return result
 
 
+def _extract_body(content: str) -> str:
+    """从 Markdown 内容中提取 body（去除 YAML frontmatter）。
+
+    类似 skills-agent-proto 的 load_skill() 实现：
+    读取 SKILL.md 的完整指令，去除 frontmatter 只返回 body。
+
+    Args:
+        content: Markdown 文档内容。
+
+    Returns:
+        去除 frontmatter 后的 body 内容。
+    """
+    if not content:
+        return ""
+    match = re.match(r'^---\s*\n.*?\n---\s*\n(.*)$', content, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return content.strip()
+
+
 # --------------------------------------------------------------------------- #
 #  客户端
 # --------------------------------------------------------------------------- #
@@ -126,6 +149,7 @@ class NacosSkillClient:
         namespace_id: str | None = None,
         timeout: int | None = None,
         verify_ssl: bool | None = None,
+        cache: SkillCache | None = None,
     ) -> None:
         """初始化客户端。
 
@@ -137,6 +161,7 @@ class NacosSkillClient:
             namespace_id: 默认命名空间。
             timeout: 请求超时秒数。
             verify_ssl: 是否验证 SSL 证书。
+            cache: 本地 Skill 缓存实例。
         """
         if config is not None:
             self.base_url: str = config.nacos.server_addr.rstrip("/")
@@ -155,6 +180,7 @@ class NacosSkillClient:
         self._session.verify = self.verify_ssl
         self._token: str | None = None
         self._client_version: str = "nacos-python-skill-client/1.0.0"
+        self.cache: SkillCache | None = cache
 
         # 自动登录
         self._login(self._username, self._password)
@@ -405,6 +431,155 @@ class NacosSkillClient:
             name, version,
         )
         return None
+
+    # ------------------------------------------------------------------ #
+    #  Level 1/2: 元数据发现与内容加载
+    # ------------------------------------------------------------------ #
+
+    def scan_skills_metadata(
+        self,
+        namespace_id: str | None = None,
+        max_count: int | None = None,
+    ) -> list[SkillMetadata]:
+        """Level 1: 扫描所有可用 Skill 的元数据。
+
+        类似 skills-agent-proto 的 SkillLoader.scan_skills()
+        仅解析 frontmatter（name + description），不加载完整内容。
+        用于系统 prompt 注入和路由发现。
+
+        Args:
+            namespace_id: 命名空间。
+            max_count: 最大返回数量（用于限制 token 用量）。
+
+        Returns:
+            SkillMetadata 列表（仅含 name/description/path）。
+        """
+        all_items = self.get_all_skills(namespace_id=namespace_id)
+        skills: list[SkillMetadata] = []
+        for item in all_items:
+            if not item.name:
+                continue
+            # 构造文件路径（Nacos 存储路径）
+            path_str = f"nacos://{namespace_id or self.namespace_id}/{item.name}"
+            desc = item.description or ""
+            skills.append(SkillMetadata(
+                name=item.name,
+                description=desc,
+                skill_path=Path(path_str),
+            ))
+            if max_count and len(skills) >= max_count:
+                break
+        return skills
+
+    def load_skill_metadata(
+        self,
+        skill_name: str,
+        namespace_id: str | None = None,
+        version: str | None = None,
+        priority: list[str] | None = None,
+    ) -> SkillContent | None:
+        """Level 2: 加载 Skill 完整内容。
+
+        类似 skills-agent-proto 的 SkillLoader.load_skill()
+        读取指令文件并提取 body（去除 frontmatter），
+        只返回 instructions，不收集 scripts 列表。
+
+        Args:
+            skill_name: Skill 名称。
+            namespace_id: 命名空间。
+            version: 版本号。
+            priority: 指令文件优先级列表。
+
+        Returns:
+            SkillContent 或 None。
+        """
+        if priority is None:
+            priority = ["SKILL.md", "AGENTS.md", "SOUL.md"]
+
+        # 先获取 metadata
+        metadata_result = self.scan_skills_metadata(namespace_id=namespace_id, max_count=1)
+        metadata = None
+        for m in metadata_result:
+            if m.name == skill_name:
+                metadata = m
+                break
+        if not metadata:
+            path_str = f"nacos://{namespace_id or self.namespace_id}/{skill_name}"
+            metadata = SkillMetadata(name=skill_name, description="", skill_path=Path(path_str))
+
+        # 获取指令文件内容（通过四级回退）
+        result = self.get_instruction_file(skill_name, version or "", priority=priority)
+        if not result:
+            return None
+
+        label, content = result
+        # 提取 body（去除 frontmatter）
+        instructions = _extract_body(content)
+
+        return SkillContent(
+            metadata=metadata,
+            instructions=instructions,
+        )
+
+    # ------------------------------------------------------------------ #
+    #  缓存支持
+    # ------------------------------------------------------------------ #
+
+    def download_and_cache_skill(self, name: str, version: str | None = None,
+                                 namespace_id: str | None = None,
+                                 priority: list[str] | None = None) -> list[str]:
+        """从 Nacos 获取 Skill 的指令文件并保存到本地缓存。
+
+        Args:
+            name: Skill 名称。
+            version: 版本号。
+            namespace_id: 命名空间。
+            priority: 文件优先级列表。
+
+        Returns:
+            已保存的文件名列表。
+        """
+        if not self.cache:
+            logger.info("Cache not configured, skipping download and cache for %s", name)
+            return []
+
+        if priority is None:
+            priority = ["SKILL.md", "AGENTS.md", "SOUL.md", "IDENTITY.md"]
+
+        file_map = {
+            "SKILL.md": "config_SKILL__md",
+            "AGENTS.md": "config_AGENTS__md",
+            "SOUL.md": "config_SOUL__md",
+            "IDENTITY.md": "config_IDENTITY__md",
+        }
+
+        saved_files: list[str] = []
+        try:
+            detail = self.get_skill_version_detail(name, version, namespace_id)
+        except (NacosNotFoundError, NacosAPIError) as exc:
+            logger.warning("Failed to get Skill detail for caching (name=%s): %s", name, exc)
+            return []
+
+        resource_data = getattr(detail, 'resource', {}) or {}
+        file_label_to_filename = {
+            "SKILL.md": "AGENTS.md",  # SKILL.md 也缓存为 AGENTS.md（兼容）
+            "AGENTS.md": "AGENTS.md",
+            "SOUL.md": "SOUL.md",
+            "IDENTITY.md": "IDENTITY.md",
+        }
+
+        description = getattr(detail, 'description', '') or ''
+
+        for label in priority:
+            key = file_map.get(label, label)
+            content = self._resolve_resource_content(resource_data, key)
+            if content:
+                cache_filename = file_label_to_filename.get(label, label)
+                self.cache.save_skill(name, content, cache_filename, version=version, description=description)
+                saved_files.append(cache_filename)
+                logger.info("Cached skill %s: %s (%d chars)", name, cache_filename, len(content))
+
+        return saved_files
 
     # ------------------------------------------------------------------ #
     #  Public API — 基于 Client API
@@ -735,18 +910,25 @@ class NacosSkillClient:
     # ------------------------------------------------------------------ #
 
     def get_skill_md(self, name: str, version: str | None = None,
-                     namespace_id: str | None = None) -> dict[str, Any] | None:
+                     namespace_id: str | None = None,
+                     use_cache: bool = True) -> dict[str, Any] | None:
         """获取 SKILL.md 内容。
 
-        使用四级回退策略：
-        1. 带 version 获取
-        2. 不带 version 获取
-        3. Console API 回退
-        4. 返回 None
+        缓存优先：
+        1. 如果缓存启用且已缓存，直接从缓存读取
+        2. 否则从 Nacos 获取（四级回退策略）
 
         Returns:
             {"content": str, "frontmatter": {"name": str, "description": str}} 或 None。
         """
+        if use_cache and self.cache and self.cache.has_skill(name):
+            cached_label, cached_content = self.cache.get_skill_file(name, "AGENTS.md")
+            if cached_content is not None:
+                return {
+                    "content": cached_content,
+                    "frontmatter": _parse_frontmatter(cached_content),
+                }
+
         result = self.get_instruction_file(name, version or "", priority=['SKILL.md'])
         if result:
             content = result[1]
@@ -757,14 +939,25 @@ class NacosSkillClient:
         return None
 
     def get_agents_md(self, name: str, version: str | None = None,
-                      namespace_id: str | None = None) -> dict[str, Any] | None:
+                      namespace_id: str | None = None,
+                      use_cache: bool = True) -> dict[str, Any] | None:
         """获取 AGENTS.md 内容。
 
-        使用四级回退策略，失败返回 None。
+        缓存优先：
+        1. 如果缓存启用且已缓存，直接从缓存读取
+        2. 否则从 Nacos 获取（四级回退策略）
 
         Returns:
             {"content": str, "frontmatter": {"name": str, "description": str}} 或 None。
         """
+        if use_cache and self.cache and self.cache.has_skill(name):
+            cached_label, cached_content = self.cache.get_skill_file(name, "AGENTS.md")
+            if cached_content is not None:
+                return {
+                    "content": cached_content,
+                    "frontmatter": _parse_frontmatter(cached_content),
+                }
+
         result = self.get_instruction_file(name, version or "", priority=['AGENTS.md'])
         if result:
             content = result[1]
@@ -775,14 +968,25 @@ class NacosSkillClient:
         return None
 
     def get_soul_md(self, name: str, version: str | None = None,
-                    namespace_id: str | None = None) -> dict[str, Any] | None:
+                    namespace_id: str | None = None,
+                    use_cache: bool = True) -> dict[str, Any] | None:
         """获取 SOUL.md 内容。
 
-        使用四级回退策略，失败返回 None。
+        缓存优先：
+        1. 如果缓存启用且已缓存，直接从缓存读取
+        2. 否则从 Nacos 获取（四级回退策略）
 
         Returns:
             {"content": str, "frontmatter": {"name": str, "description": str}} 或 None。
         """
+        if use_cache and self.cache and self.cache.has_skill(name):
+            cached_label, cached_content = self.cache.get_skill_file(name, "SOUL.md")
+            if cached_content is not None:
+                return {
+                    "content": cached_content,
+                    "frontmatter": _parse_frontmatter(cached_content),
+                }
+
         result = self.get_instruction_file(name, version or "", priority=['SOUL.md'])
         if result:
             content = result[1]

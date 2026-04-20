@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from nacos_skill_client.config import Config, NacosConfig, LLMConfig, RouterConfig
+from nacos_skill_client.config import Config, NacosConfig, LLMConfig, RouterConfig, SkillLoaderConfig
 
 
 class TestNacosConfig:
@@ -89,3 +89,31 @@ class TestConfigAPI:
     def test_get_api_addr_fallback(self):
         cfg = Config(nacos=NacosConfig(server_addr="http://a:8002"))
         assert cfg.get_api_addr() == "http://a:8002"
+
+
+class TestSkillLoaderConfig:
+    """测试 SkillLoaderConfig（Level 1/2 加载配置）。"""
+
+    def test_defaults(self):
+        cfg = SkillLoaderConfig()
+        assert cfg.file_priority == ["SKILL.md", "AGENTS.md", "SOUL.md"]
+        assert cfg.max_metadata_count == 200
+        assert cfg.cache_metadata is True
+        assert cfg.metadata_cache_ttl_minutes == 60
+
+    def test_custom_values(self):
+        cfg = SkillLoaderConfig(
+            file_priority=["AGENTS.md", "SKILL.md"],
+            max_metadata_count=50,
+            cache_metadata=False,
+            metadata_cache_ttl_minutes=30,
+        )
+        assert cfg.file_priority == ["AGENTS.md", "SKILL.md"]
+        assert cfg.max_metadata_count == 50
+        assert cfg.cache_metadata is False
+        assert cfg.metadata_cache_ttl_minutes == 30
+
+    def test_config_has_skill_loader(self):
+        cfg = Config()
+        assert cfg.skill_loader is not None
+        assert isinstance(cfg.skill_loader, SkillLoaderConfig)

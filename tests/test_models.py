@@ -1,10 +1,13 @@
 """测试数据模型。"""
 
 import pytest
+from pathlib import Path
 from nacos_skill_client.models import (
-    SkillItem,
+    SkillContent,
     SkillDetail,
+    SkillItem,
     SkillListResult,
+    SkillMetadata,
     SkillVersionInfo,
     SkillVersionDetail,
     SkillResourceFile,
@@ -76,6 +79,34 @@ class TestRouteResult:
     def test_null_skill(self):
         r = RouteResult(skill_name=None, reason="no skill needed")
         assert r.to_dict() == {"skill_name": None, "reason": "no skill needed"}
+
+
+class TestSkillMetadata:
+    """测试 SkillMetadata 数据类（Level 1 轻量级发现）。"""
+
+    def test_basic(self):
+        m = SkillMetadata(
+            name="翻译助手",
+            description="翻译文本",
+            skill_path=Path("/tmp/test-skill"),
+        )
+        assert m.name == "翻译助手"
+        assert m.description == "翻译文本"
+        assert m.skill_path == Path("/tmp/test-skill")
+
+    def test_to_prompt_line(self):
+        m = SkillMetadata(name="code-gen", description="生成代码", skill_path=Path("/tmp"))
+        assert m.to_prompt_line() == "- **code-gen**: 生成代码"
+
+
+class TestSkillContent:
+    """测试 SkillContent 数据类（Level 2 按需加载）。"""
+
+    def test_basic(self):
+        metadata = SkillMetadata(name="test", description="desc", skill_path=Path("/tmp"))
+        content = SkillContent(metadata=metadata, instructions="# Hello\n\nRun script")
+        assert content.metadata.name == "test"
+        assert content.instructions == "# Hello\n\nRun script"
 
 
 class TestSkillResourceFile:

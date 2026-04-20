@@ -17,7 +17,14 @@ from nacos_skill_client.router import SkillRouter, route_and_execute
 from nacos_skill_client.utils import create_llm_client
 
 from . import dependencies
-from .schemas import ListRequest, RouteRequest, RouteResponse, SearchRequest
+from .schemas import (
+    ListRequest,
+    RouteRequest,
+    RouteResponse,
+    SearchRequest,
+    SkillMetadataListResponse,
+    SkillMetadataResponse,
+)
 
 get_client = dependencies.get_client
 get_config = dependencies.get_config
@@ -25,6 +32,43 @@ get_config = dependencies.get_config
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["skills"])
+
+
+@router.get("/skills/metadata", summary="获取所有 Skill 元数据（Level 1 发现）")
+def get_skills_metadata(
+    namespace_id: str = "public",
+    client: NacosSkillClient = Depends(get_client),
+    config: Config = Depends(get_config),
+):
+    """Level 1 元数据发现端点。
+
+    类似 skills-agent-proto 的 SkillLoader.scan_skills()
+    仅返回 name + description，不加载完整 SKILL.md 内容。
+    用于系统 prompt 注入和路由发现。
+
+    响应示例:
+    ```json
+    {
+      "total_count": 3,
+      "skills": [
+        {"name": "翻译助手", "description": "翻译文本"},
+        {"name": "代码生成", "description": "生成代码"},
+        {"name": "天气查询", "description": "查询天气"}
+      ]
+    }
+    ```
+    """
+    max_count = config.skill_loader.max_metadata_count
+    logger.info("get_skills_metadata: namespace=%s, max_count=%d", namespace_id, max_count)
+    metadata_list = client.scan_skills_metadata(namespace_id=namespace_id, max_count=max_count)
+    logger.info("get_skills_metadata: found %d skills", len(metadata_list))
+    return SkillMetadataListResponse(
+        total_count=len(metadata_list),
+        skills=[
+            SkillMetadataResponse(name=m.name, description=m.description)
+            for m in metadata_list
+        ],
+    )
 
 
 @router.get("/skills/search", summary="搜索 Skills")
@@ -148,13 +192,29 @@ def route_skill(
     if route_result.skill_name:
         try:
             logger.info("route_skill: fetching instruction for skill=%s", route_result.skill_name)
-            file_label, skill_md = client.get_instruction_file(
-                route_result.skill_name, "",
-                priority=config.router.instruction_file_priority,
-            )
+            file_label: str | None = None
+            if client.cache and client.cache.has_skill(route_result.skill_name):
+                logger.info("route_skill: cache hit for skill=%s", route_result.skill_name)
+                file_label, skill_md = client.cache.get_skill_file(
+                    route_result.skill_name, "AGENTS.md",
+                )
+                if skill_md is None:
+                    # manifest exists but file missing, fall through to download
+                    logger.info("route_skill: cache manifest found but file missing, downloading")
+                    file_label = None
+                    skill_md = None
+            if skill_md is None:
+                file_label, skill_md = client.get_instruction_file(
+                    route_result.skill_name, "",
+                    priority=config.router.instruction_file_priority,
+                )
             if skill_md is None:
                 skill_md = ""
-            logger.info("route_skill: instruction loaded (%s, %d chars), calling LLM", file_label, len(skill_md))
+            # Cache the skill for future use
+            if client.cache and file_label and skill_md:
+                logger.info("route_skill: caching skill=%s (%s, %d chars)", route_result.skill_name, file_label, len(skill_md))
+                client.cache.save_skill(route_result.skill_name, skill_md, file_label)
+            logger.info("route_skill: instruction loaded (%s, %d chars), calling LLM", file_label or "unknown", len(skill_md))
             prompt = (
                 f"下面的内容是 {route_result.skill_name} 的指令文件（{file_label}），"
                 f"请按照以上指令，帮助用户解决问题。\n\n"
@@ -230,10 +290,22 @@ def route_skill_stream(
             logger.info("route_skill_stream: selected skill=%s", route_result.skill_name)
             yield {"event": "skill_selected", "data": json.dumps({"skill_name": route_result.skill_name})}
             try:
-                file_label, skill_md = client.get_instruction_file(
-                    route_result.skill_name, "",
-                    priority=config.router.instruction_file_priority,
-                )
+                file_label: str | None = None
+                skill_md: str | None = None
+                # 尝试从缓存读取
+                if client.cache and client.cache.has_skill(route_result.skill_name):
+                    file_label, skill_md = client.cache.get_skill_file(
+                        route_result.skill_name, "AGENTS.md",
+                    )
+                # 缓存未命中则从 Nacos 下载
+                if skill_md is None:
+                    file_label, skill_md = client.get_instruction_file(
+                        route_result.skill_name, "",
+                        priority=config.router.instruction_file_priority,
+                    )
+                # 缓存指令文件
+                if client.cache and file_label and skill_md:
+                    client.cache.save_skill(route_result.skill_name, skill_md, file_label)
                 if skill_md is None:
                     skill_md = ""
                 yield {"event": "instruction_loaded", "data": json.dumps({"file_label": file_label, "length": len(skill_md)})}
