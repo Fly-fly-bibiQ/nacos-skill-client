@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from openai import OpenAI
 from sse_starlette.sse import EventSourceResponse
 
+from nacos_skill_client import NacosNotFoundError
 from nacos_skill_client.client import NacosSkillClient
 from nacos_skill_client.config import Config
 from nacos_skill_client.router import SkillRouter, route_and_execute
