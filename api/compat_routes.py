@@ -18,19 +18,22 @@ from fastapi import APIRouter, Depends
 from langchain_openai import ChatOpenAI
 from sse_starlette.sse import EventSourceResponse
 
-from nacos_skill_client.client import NacosSkillClient
 from nacos_skill_client.config import Config
 from nacos_skill_client.router import SkillRouter
 from nacos_skill_client.utils import create_llm_client
 
 # 延迟导入，避免循环依赖
-def _get_client():
-    from . import dependencies
-    return dependencies.get_client()
-
 def _get_config():
     from . import dependencies
     return dependencies.get_config()
+
+def _get_client(config: Config = Depends(_get_config)):
+    from nacos_skill_client.cache import SkillCache
+    from nacos_skill_client.client import NacosSkillClient
+    cache = None
+    if config.cache.enabled:
+        cache = SkillCache(cache_dir=config.cache.dir)
+    return NacosSkillClient(config=config, cache=cache)
 
 logger = logging.getLogger(__name__)
 
