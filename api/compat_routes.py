@@ -23,6 +23,8 @@ from nacos_skill_client.router import SkillRouter
 from nacos_skill_client.utils import create_llm_client
 
 # 延迟导入，避免循环依赖
+from agent.stream import stream_agent_response
+
 def _get_config():
     from . import dependencies
     return dependencies.get_config()
