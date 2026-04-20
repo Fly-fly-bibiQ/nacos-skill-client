@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  nacos-skill-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nacos-skill-api
+    ports:
+      - "8899:8899"
+    environment:
+      - NACOS_SKILL_NACOS__SERVER_ADDR=http://192.168.1.118:8002
+      - NACOS_SKILL_NACOS__API_ADDR=http://192.168.1.118:8848
+      - NACOS_SKILL_NACOS__USERNAME=nacos
+      - NACOS_SKILL_NACOS__PASSWORD=nacos
+      - NACOS_SKILL_NACOS__NAMESPACE_ID=public
+      - NACOS_SKILL_LLM__BASE_URL=http://192.168.1.118:8000/v1
+      - NACOS_SKILL_LLM__MODEL=Qwen3.6-35B-A3B-FP8
+      - NACOS_SKILL_LLM__API_KEY=dummy
+      - NACOS_SKILL_API__HOST=0.0.0.0
+      - NACOS_SKILL_API__PORT=8899
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8899/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - nacos-skill-net
+
+networks:
+  nacos-skill-net:
+    driver: bridge

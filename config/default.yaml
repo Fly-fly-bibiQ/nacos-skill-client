@@ -1,0 +1,59 @@
+# Nacos Skill Client — 默认配置文件
+# 所有配置项均可通过环境变量覆盖（前缀: NACOS_SKILL_）
+
+nacos:
+  # Nacos 服务地址（API 调用，不带 /nacos 前缀）
+  server_addr: "http://192.168.1.118:8848"
+  # Nacos 登录地址（带 /nacos 前缀，使用 8848 端口）
+  login_addr: "http://192.168.1.118:8848/nacos"
+  username: "nacos"
+  password: "nacos"
+  # 默认命名空间
+  namespace_id: "public"
+  # 请求超时（秒）
+  timeout: 30
+  # 是否验证 SSL 证书
+  verify_ssl: true
+  # Token 刷新前剩余毫秒数（低于此值自动刷新）
+  refresh_threshold_ms: 300000
+
+# 分页默认值
+pagination:
+  default_page_size: 50
+  max_page_size: 200
+
+# LLM API 配置
+llm:
+  base_url: "http://192.168.1.118:8000/v1"
+  model: "Qwen3.6-35B-A3B-FP8"
+  api_key: "dummy"
+  temperature: 0.1
+  max_tokens: 4096
+  # 请求超时（秒）
+  timeout: 120
+
+# 路由配置
+router:
+  # 路由时发送给 LLM 的 Skills 信息最大数量
+  max_skills_for_routing: 100
+  # 路由提示词温度
+  routing_temperature: 0.1
+  # 路由最大 tokens
+  routing_max_tokens: 2048
+  # 指令文件获取优先级
+  instruction_file_priority:
+    - "SKILL.md"
+    - "AGENTS.md"
+    - "SOUL.md"
+
+# API 服务配置
+api:
+  host: "0.0.0.0"
+  port: 8899
+  reload: false
+  log_level: "info"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
