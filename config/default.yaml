@@ -22,31 +22,7 @@ pagination:
   default_page_size: 50
   max_page_size: 200
 
-# LLM API 配置
-llm:
-  base_url: "http://192.168.1.118:8000/v1"
-  model: "Qwen3.6-35B-A3B-FP8"
-  api_key: "dummy"
-  temperature: 0.1
-  max_tokens: 4096
-  # 请求超时（秒）
-  timeout: 120
-
-# 路由配置
-router:
-  # 路由时发送给 LLM 的 Skills 信息最大数量
-  max_skills_for_routing: 100
-  # 路由提示词温度
-  routing_temperature: 0.1
-  # 路由最大 tokens
-  routing_max_tokens: 2048
-  # 指令文件获取优先级
-  instruction_file_priority:
-    - "SKILL.md"
-    - "AGENTS.md"
-    - "SOUL.md"
-
-# Skill Loader 配置（借鉴 skills-agent-proto 的三层加载机制）
+# Skill Loader 配置
 skill_loader:
   # 指令文件优先级
   file_priority:

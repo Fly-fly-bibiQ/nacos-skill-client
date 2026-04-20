@@ -1,27 +1,26 @@
-"""路由定义 + SSE 流式。"""
+"""路由定义 — 仅保留 Nacos Skill 管理端点 + Skill ZIP 下载。
+
+已移除:
+- Skill 路由执行 (/skills/route)
+- 流式路由执行 (/skills/route/stream)
+- 所有 LLM 相关调用
+"""
 
 from __future__ import annotations
 
+import io
 import json
 import logging
-import time
+import zipfile
 
-from fastapi import APIRouter, Depends
-from openai import OpenAI
-from sse_starlette.sse import EventSourceResponse
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from nacos_skill_client import NacosNotFoundError
 from nacos_skill_client.client import NacosSkillClient
 from nacos_skill_client.config import Config
-from nacos_skill_client.router import SkillRouter, route_and_execute
-from nacos_skill_client.utils import create_llm_client
 
 from . import dependencies
 from .schemas import (
-    ListRequest,
-    RouteRequest,
-    RouteResponse,
-    SearchRequest,
     SkillMetadataListResponse,
     SkillMetadataResponse,
 )
@@ -34,6 +33,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["skills"])
 
 
+# --------------------------------------------------------------------------- #
+# Skill 元数据 / 列表端点
+# --------------------------------------------------------------------------- #
+
+
 @router.get("/skills/metadata", summary="获取所有 Skill 元数据（Level 1 发现）")
 def get_skills_metadata(
     namespace_id: str = "public",
@@ -42,21 +46,8 @@ def get_skills_metadata(
 ):
     """Level 1 元数据发现端点。
 
-    类似 skills-agent-proto 的 SkillLoader.scan_skills()
     仅返回 name + description，不加载完整 SKILL.md 内容。
     用于系统 prompt 注入和路由发现。
-
-    响应示例:
-    ```json
-    {
-      "total_count": 3,
-      "skills": [
-        {"name": "翻译助手", "description": "翻译文本"},
-        {"name": "代码生成", "description": "生成代码"},
-        {"name": "天气查询", "description": "查询天气"}
-      ]
-    }
-    ```
     """
     max_count = config.skill_loader.max_metadata_count
     logger.info("get_skills_metadata: namespace=%s, max_count=%d", namespace_id, max_count)
@@ -119,6 +110,11 @@ def get_all_skills(
     return {"total_count": len(items), "items": [s.model_dump() for s in items]}
 
 
+# --------------------------------------------------------------------------- #
+# Skill 详情端点
+# --------------------------------------------------------------------------- #
+
+
 @router.get("/skills/{name}", summary="获取 Skill 详情")
 def get_skill_detail(name: str, client: NacosSkillClient = Depends(get_client)):
     logger.info("get_skill_detail: name=%s", name)
@@ -133,6 +129,11 @@ def get_skill_version(name: str, version: str, client: NacosSkillClient = Depend
     return detail.model_dump()
 
 
+# --------------------------------------------------------------------------- #
+# 指令文件端点
+# --------------------------------------------------------------------------- #
+
+
 @router.get("/skills/{name}/md/{version}", summary="获取 SKILL.md")
 def get_skill_md(name: str, version: str, client: NacosSkillClient = Depends(get_client)):
     """获取 SKILL.md，支持离线 Skill 回退。"""
@@ -141,8 +142,12 @@ def get_skill_md(name: str, version: str, client: NacosSkillClient = Depends(get
     if content is None:
         logger.warning("get_skill_md: NOT FOUND name=%s, version=%s", name, version)
         raise NacosNotFoundError(f"无法获取 {name} v{version} 的 SKILL.md")
-    logger.info("get_skill_md: name=%s → %d chars", name, len(content))
-    return {"file_name": "SKILL.md", "content": content}
+    logger.info("get_skill_md: name=%s → %d chars", name, len(content.get("content", "")))
+    return {
+        "file_name": "SKILL.md",
+        "content": content.get("content", ""),
+        "frontmatter": content.get("frontmatter", {}),
+    }
 
 
 @router.get("/skills/{name}/agents/{version}", summary="获取 AGENTS.md")
@@ -153,202 +158,93 @@ def get_agents_md(name: str, version: str, client: NacosSkillClient = Depends(ge
     if content is None:
         logger.warning("get_agents_md: NOT FOUND name=%s, version=%s", name, version)
         raise NacosNotFoundError(f"无法获取 {name} v{version} 的 AGENTS.md")
-    logger.info("get_agents_md: name=%s → %d chars", name, len(content))
-    return {"file_name": "AGENTS.md", "content": content}
+    logger.info("get_agents_md: name=%s → %d chars", name, len(content.get("content", "")))
+    return {
+        "file_name": "AGENTS.md",
+        "content": content.get("content", ""),
+        "frontmatter": content.get("frontmatter", {}),
+    }
 
 
-@router.post("/skills/route", summary="Skill 路由 + 执行", response_model=RouteResponse)
-def route_skill(
-    req: RouteRequest,
-    client: NacosSkillClient = Depends(get_client),
-    config: Config = Depends(get_config),
-):
-    start = time.time()
-    logger.info("route_skill: query=%s (first 50 chars), strategy=%s", req.query[:50], req.strategy)
+# --------------------------------------------------------------------------- #
+# Skill ZIP 下载端点
+# --------------------------------------------------------------------------- #
 
-    llm_client = create_llm_client(config.llm.base_url, config.llm.api_key, config.llm.timeout)
 
-    if req.strategy == "keyword":
-        logger.debug("route_skill: creating keyword router")
-        skill_router = SkillRouter.create_keyword()
-    else:
-        logger.debug("route_skill: creating LLM router (model=%s)", config.llm.model)
-        skill_router = SkillRouter.create_llm(
-            llm_client,
-            model=config.llm.model,
-            temperature=config.router.routing_temperature,
-            max_tokens=config.router.routing_max_tokens,
-        )
+@router.get("/skills/{name}/zip/{version}", summary="下载 Skill ZIP 包")
+def download_skill_zip(name: str, version: str, namespace_id: str = "public", client: NacosSkillClient = Depends(get_client)):
+    """将 Skill 的所有资源文件打包为 ZIP 下载。
 
-    skills = client.get_all_skills()
-    limited = skills[: config.router.max_skills_for_routing]
-    logger.debug("route_skill: loaded %d skills for routing", len(limited))
+    包含：
+    - SKILL.md / AGENTS.md / SOUL.md（指令文件）
+    - 所有 resource 中的附件文件
+    """
+    logger.info("download_skill_zip: name=%s, version=%s", name, version)
 
-    route_result = skill_router.route(limited, req.query)
-    logger.info("route_skill: matched skill=%s, reason=%s", route_result.skill_name or "N/A", route_result.reason[:100])
+    try:
+        detail = client.get_skill_version_detail(name, version)
+    except NacosNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
-    answer = ""
-    skill_md = None
-    if route_result.skill_name:
-        try:
-            logger.info("route_skill: fetching instruction for skill=%s", route_result.skill_name)
-            file_label: str | None = None
-            if client.cache and client.cache.has_skill(route_result.skill_name):
-                logger.info("route_skill: cache hit for skill=%s", route_result.skill_name)
-                file_label, skill_md = client.cache.get_skill_file(
-                    route_result.skill_name, "AGENTS.md",
-                )
-                if skill_md is None:
-                    # manifest exists but file missing, fall through to download
-                    logger.info("route_skill: cache manifest found but file missing, downloading")
-                    file_label = None
-                    skill_md = None
-            if skill_md is None:
-                file_label, skill_md = client.get_instruction_file(
-                    route_result.skill_name, "",
-                    priority=config.router.instruction_file_priority,
-                )
-            if skill_md is None:
-                skill_md = ""
-            # Cache the skill for future use
-            if client.cache and file_label and skill_md:
-                logger.info("route_skill: caching skill=%s (%s, %d chars)", route_result.skill_name, file_label, len(skill_md))
-                client.cache.save_skill(route_result.skill_name, skill_md, file_label)
-            logger.info("route_skill: instruction loaded (%s, %d chars), calling LLM", file_label or "unknown", len(skill_md))
-            prompt = (
-                f"下面的内容是 {route_result.skill_name} 的指令文件（{file_label}），"
-                f"请按照以上指令，帮助用户解决问题。\n\n"
-                f"--- 指令开始 ---\n{skill_md}\n--- 指令结束 ---\n\n"
-                f"用户问题：\n{req.query}\n"
-            )
-            resp = llm_client.chat.completions.create(
-                model=config.llm.model,
-                messages=[
-                    {"role": "system", "content": "你是一个 AI 助手，请严格按照以下 Skill 指令帮助用户解决问题。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-            )
-            answer = resp.choices[0].message.content
-            logger.info("route_skill: LLM response received (%d chars)", len(answer))
-        except Exception as exc:
-            logger.error("route_skill: skill execution failed for %s: %s", route_result.skill_name, exc, exc_info=True)
-            answer = f"⚠️ 获取 Skill 内容失败: {exc}"
-    else:
-        logger.info("route_skill: no skill matched, calling LLM directly")
-        resp = llm_client.chat.completions.create(
-            model=config.llm.model,
-            messages=[{"role": "user", "content": req.query}],
-            temperature=config.llm.temperature,
-            max_tokens=config.llm.max_tokens,
-        )
-        answer = resp.choices[0].message.content
-        logger.info("route_skill: LLM direct response received (%d chars)", len(answer))
+    # 构建 ZIP 内存流
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 添加指令文件
+        instructions = [
+            ("SKILL.md", "config_SKILL__md"),
+            ("AGENTS.md", "config_AGENTS__md"),
+            ("SOUL.md", "config_SOUL__md"),
+            ("IDENTITY.md", "config_IDENTITY__md"),
+        ]
+        for local_name, resource_key in instructions:
+            content = detail.resource.get(resource_key)
+            if content is None:
+                continue
+            if isinstance(content, str):
+                zf.writestr(local_name, content)
+            elif isinstance(content, dict):
+                file_content = content.get("content", "")
+                zf.writestr(local_name, file_content)
+            elif hasattr(content, "content"):
+                zf.writestr(local_name, content.content)
 
-    took_ms = int((time.time() - start) * 1000)
-    logger.info("route_skill: completed in %dms, skill=%s", took_ms, route_result.skill_name or "N/A")
-    return RouteResponse(
-        query=req.query,
-        route=route_result.to_dict(),
-        skill_md=skill_md,
-        answer=answer,
-        took_ms=took_ms,
+        # 添加所有其他资源文件
+        for resource_key, file_obj in (detail.resource or {}).items():
+            # 跳过已添加的指令文件
+            if resource_key in [k[1] for k in instructions]:
+                continue
+            if file_obj is None:
+                continue
+            content = file_obj if isinstance(file_obj, str) else ""
+            if isinstance(file_obj, dict):
+                content = file_obj.get("content", "")
+            elif hasattr(file_obj, "content"):
+                content = file_obj.content
+            if content:
+                zf.writestr(f"resources/{resource_key}", content)
+
+    # 生成前端文件名（安全化）
+    safe_name = "".join(
+        c if c.isascii() and (c.isalnum() or c in ('-', '_')) else '_'
+        for c in name
+    ) or "skill"
+
+    zip_buffer.seek(0)
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}-{version}.zip"',
+        },
     )
 
 
-@router.post("/skills/route/stream", summary="Skill 路由 + 流式执行")
-def route_skill_stream(
-    req: RouteRequest,
-    client: NacosSkillClient = Depends(get_client),
-    config: Config = Depends(get_config),
-):
-    logger.info("route_skill_stream: query=%s (first 50 chars), strategy=%s", req.query[:50], req.strategy)
-    llm_client = create_llm_client(config.llm.base_url, config.llm.api_key, config.llm.timeout)
-
-    if req.strategy == "keyword":
-        logger.debug("route_skill_stream: creating keyword router")
-        skill_router = SkillRouter.create_keyword()
-    else:
-        skill_router = SkillRouter.create_llm(
-            llm_client,
-            model=config.llm.model,
-            temperature=config.router.routing_temperature,
-            max_tokens=config.router.routing_max_tokens,
-        )
-
-    skills = client.get_all_skills()
-    limited = skills[: config.router.max_skills_for_routing]
-    route_result = skill_router.route(limited, req.query)
-    logger.info("route_skill_stream: matched skill=%s, reason=%s", route_result.skill_name or "N/A", route_result.reason[:100])
-
-    def event_generator():
-        # 发送路由结果
-        yield {"event": "route", "data": json.dumps(route_result.to_dict(), ensure_ascii=False)}
-
-        if route_result.skill_name:
-            logger.info("route_skill_stream: selected skill=%s", route_result.skill_name)
-            yield {"event": "skill_selected", "data": json.dumps({"skill_name": route_result.skill_name})}
-            try:
-                file_label: str | None = None
-                skill_md: str | None = None
-                # 尝试从缓存读取
-                if client.cache and client.cache.has_skill(route_result.skill_name):
-                    file_label, skill_md = client.cache.get_skill_file(
-                        route_result.skill_name, "AGENTS.md",
-                    )
-                # 缓存未命中则从 Nacos 下载
-                if skill_md is None:
-                    file_label, skill_md = client.get_instruction_file(
-                        route_result.skill_name, "",
-                        priority=config.router.instruction_file_priority,
-                    )
-                # 缓存指令文件
-                if client.cache and file_label and skill_md:
-                    client.cache.save_skill(route_result.skill_name, skill_md, file_label)
-                if skill_md is None:
-                    skill_md = ""
-                yield {"event": "instruction_loaded", "data": json.dumps({"file_label": file_label, "length": len(skill_md)})}
-                logger.info("route_skill_stream: instruction loaded (%s, %d chars), starting LLM stream", file_label, len(skill_md))
-
-                prompt = (
-                    f"下面的内容是 {route_result.skill_name} 的指令文件（{file_label}），"
-                    f"请按照以上指令，帮助用户解决问题。\n\n"
-                    f"--- 指令开始 ---\n{skill_md}\n--- 指令结束 ---\n\n"
-                    f"用户问题：\n{req.query}\n"
-                )
-                resp = llm_client.chat.completions.create(
-                    model=config.llm.model,
-                    messages=[
-                        {"role": "system", "content": "你是一个 AI 助手，请严格按照以下 Skill 指令帮助用户解决问题。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=config.llm.temperature,
-                    max_tokens=config.llm.max_tokens,
-                    stream=True,
-                )
-                for chunk in resp:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield {"event": "content", "data": chunk.choices[0].delta.content}
-                logger.info("route_skill_stream: LLM stream completed for skill=%s", route_result.skill_name)
-            except Exception as exc:
-                logger.error("route_skill_stream: skill stream failed for %s: %s", route_result.skill_name, exc, exc_info=True)
-                yield {"event": "error", "data": json.dumps({"error": str(exc)})}
-        else:
-            logger.info("route_skill_stream: no skill matched, streaming LLM directly")
-            yield {"event": "no_skill", "data": json.dumps({"reason": route_result.reason})}
-            resp = llm_client.chat.completions.create(
-                model=config.llm.model,
-                messages=[{"role": "user", "content": req.query}],
-                temperature=config.llm.temperature,
-                max_tokens=config.llm.max_tokens,
-                stream=True,
-            )
-            for chunk in resp:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield {"event": "content", "data": chunk.choices[0].delta.content}
-            logger.info("route_skill_stream: LLM direct stream completed")
-
-        yield {"event": "done", "data": json.dumps({"type": "done", "status": "complete"})}
-
-    return EventSourceResponse(event_generator())
+@router.get("/skills/{name}/zip", summary="下载 Skill ZIP 包（最新版）")
+def download_skill_zip_latest(name: str, namespace_id: str = "public", client: NacosSkillClient = Depends(get_client)):
+    """下载最新版本的 Skill ZIP 包。"""
+    logger.info("download_skill_zip_latest: name=%s", name)
+    detail = client.get_skill_detail(name)
+    version = detail.editing_version or (detail.versions[0].version if detail.versions else None)
+    if not version:
+        raise HTTPException(status_code=404, detail=f"Skill {name} 没有可用版本")
+    return download_skill_zip(name, version, namespace_id=namespace_id, client=client)

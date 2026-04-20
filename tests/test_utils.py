@@ -1,16 +1,8 @@
 """测试工具函数。"""
 
 import pytest
-from unittest.mock import MagicMock, patch
 
-from nacos_skill_client.utils import create_llm_client, call_llm, build_prompt
-
-
-class TestCreateLLMClient:
-    def test_creates_client(self):
-        client = create_llm_client("http://test:8000/v1", "test-key", 60)
-        assert client.base_url == "http://test:8000/v1/"
-        assert client.api_key == "test-key"
+from nacos_skill_client.utils import build_prompt, extract_frontmatter_content, extract_body
 
 
 class TestBuildPrompt:
@@ -21,18 +13,33 @@ class TestBuildPrompt:
         assert msgs[1] == {"role": "user", "content": "Hello"}
 
 
-class TestCallLLM:
-    def test_non_streaming(self):
-        mock_client = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock(message=MagicMock(content="Hello world"))]
-        mock_client.chat.completions.create.return_value = mock_resp
+class TestFrontmatter:
+    def test_extract_frontmatter(self):
+        content = "---\nname: test\n\ndescription: A test\n---\n\nBody here"
+        result = extract_frontmatter_content(content)
+        assert result["name"] == "test"
+        assert result["description"] == "A test"
 
-        result = call_llm(mock_client, [{"role": "user", "content": "hi"}], model="test-model")
+    def test_no_frontmatter(self):
+        result = extract_frontmatter_content("no frontmatter here")
+        assert result == {}
+
+    def test_empty(self):
+        result = extract_frontmatter_content("")
+        assert result == {}
+
+
+class TestExtractBody:
+    def test_with_frontmatter(self):
+        content = "---\nname: test\n---\n\nHello world"
+        result = extract_body(content)
         assert result == "Hello world"
 
-    def test_streaming(self):
-        mock_client = MagicMock()
-        gen = call_llm(mock_client, [{"role": "user", "content": "hi"}], stream=True)
-        # Should return a generator (not a function)
-        assert hasattr(gen, "__iter__")
+    def test_without_frontmatter(self):
+        content = "Just plain text"
+        result = extract_body(content)
+        assert result == "Just plain text"
+
+    def test_empty(self):
+        result = extract_body("")
+        assert result == ""
