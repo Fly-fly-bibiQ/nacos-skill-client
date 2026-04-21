@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 
 from nacos_skill_client import NacosNotFoundError
 from nacos_skill_client.client import NacosSkillClient
@@ -36,6 +37,22 @@ get_agent_manager = dependencies.get_agent_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["skills"])
+
+
+# --------------------------------------------------------------------------- #
+#  SSE Helper
+# --------------------------------------------------------------------------- #
+
+
+def _sse_event(event: str, data: dict) -> dict:
+    """Create SSE event dict."""
+    return {"event": event, "data": data}
+
+
+def _format_sse(event: dict) -> str:
+    """Format SSE event to string."""
+    data = json.dumps(event["data"], ensure_ascii=False)
+    return f"event: {event['event']}\ndata: {data}\n\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -148,6 +165,52 @@ def chat_with_agent(
     )
 
 
+@router.get("/chat/stream", summary="与 Agent 流式对话")
+def chat_stream(
+    message: str = Query(default=""),
+    thread_id: str = Query(default="default"),
+    agent_manager=Depends(get_agent_manager),
+):
+    """GET /api/v1/chat/stream?message=xxx&thread_id=xxx — SSE 流式响应。
+
+    使用 GET + query params 以支持 URL 传递参数，返回 Server-Sent Events 流。
+    事件类型：
+    - event: text — 最终回答
+    - event: tool_used — 使用的工具
+    - event: thinking_steps — 思考步骤
+    - event: took_ms — 耗时
+    - event: error — 错误
+    """
+    if not agent_manager.enabled:
+        return StreamingResponse(
+            iter([_format_sse(_sse_event("error", {"message": "Agent disabled"}))]),
+            media_type="text/event-stream",
+        )
+
+    if not message.strip():
+        return StreamingResponse(
+            iter([_format_sse(_sse_event("error", {"message": "message is required"}))]),
+            media_type="text/event-stream",
+        )
+
+    result = agent_manager.chat(message, thread_id=thread_id)
+
+    events = []
+    events.append(_sse_event("text", {"content": result.answer}))
+    if result.tool_used:
+        events.append(_sse_event("tool_used", {"name": result.tool_used}))
+    if result.thinking_steps:
+        events.append(_sse_event("thinking_steps", {"steps": result.thinking_steps}))
+    events.append(_sse_event("took_ms", {"value": result.took_ms}))
+    events.append(_sse_event("done", {}))
+
+    return StreamingResponse(
+        iter([_format_sse(e) for e in events]),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @router.get("/skills/tools", summary="获取已注册 Tools 列表", response_model=ToolsListResponse)
 def get_tools_list(
     agent_manager=Depends(get_agent_manager),
@@ -174,6 +237,33 @@ def reload_tools(
         time_ms=reload_result.get("time_ms", 0),
         agent_initialized=reload_result.get("agent_initialized", False),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Skill 扫描端点
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/skills/scan", summary="扫描可用 Skills")
+def scan_skills(
+    namespace_id: str = "public",
+    client: NacosSkillClient = Depends(get_client),
+):
+    """GET /api/v1/skills/scan — 扫描 Nacos 中所有可用 Skill 的元数据。
+
+    返回名称、描述、版本号等元数据，不获取完整 SKILL.md 内容。
+    """
+    try:
+        skills = client.scan_skills_metadata(namespace_id=namespace_id, max_count=500)
+        return {
+            "skills": [
+                {"name": s.name, "description": s.description or "", "path": str(s.skill_path)}
+                for s in skills
+            ],
+            "total": len(skills),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # --------------------------------------------------------------------------- #
