@@ -35,10 +35,7 @@ SKILL_ITEMS = [
 ]
 
 
-@pytest.fixture
-def client():
-    """TestClient fixture。"""
-    return TestClient(app)
+# Note: client fixture moved to conftest.py for shared use across test modules
 
 
 def _make_skill_list_result(count=3):

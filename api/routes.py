@@ -120,6 +120,63 @@ def get_all_skills(
 
 
 # --------------------------------------------------------------------------- #
+# Agent 相关端点（必须在 /skills/{name} 之前注册，避免路径冲突）
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/chat", summary="与 Agent 对话", response_model=ChatResponse)
+def chat_with_agent(
+    req: ChatRequest,
+    agent_manager=Depends(get_agent_manager),
+):
+    """POST /api/v1/chat — 通过 LangChain Agent 处理用户请求。
+
+    Agent 会根据可用的 Tools（从 Nacos 加载的 Skills）自动选择并执行。
+    """
+    if not agent_manager.enabled:
+        return ChatResponse(
+            answer="Agent mode is disabled. Please contact administrator to enable it.",
+            took_ms=0.0,
+        )
+
+    result = agent_manager.chat(req.message, thread_id=req.thread_id)
+    return ChatResponse(
+        answer=result.answer,
+        tool_used=result.tool_used,
+        thinking_steps=result.thinking_steps,
+        took_ms=result.took_ms,
+    )
+
+
+@router.get("/skills/tools", summary="获取已注册 Tools 列表", response_model=ToolsListResponse)
+def get_tools_list(
+    agent_manager=Depends(get_agent_manager),
+):
+    """GET /api/v1/skills/tools — 获取当前已注册的 LangChain Tools。"""
+    tools_dict = agent_manager.loader.registry.tools
+    tools = [
+        ToolInfo(name=name, description=tool.description or "")
+        for name, tool in sorted(tools_dict.items())
+    ]
+    return ToolsListResponse(tools=tools, total=len(tools))
+
+
+@router.post("/skills/tools/reload", summary="重新加载 Tools", response_model=ReloadResponse)
+def reload_tools(
+    agent_manager=Depends(get_agent_manager),
+):
+    """POST /api/v1/skills/tools/reload — 重新从 Nacos 加载所有 Skills 为 Tools。"""
+    reload_result = agent_manager.reload()
+    return ReloadResponse(
+        status=reload_result.get("status", "ok"),
+        loaded=reload_result.get("loaded", 0),
+        total=reload_result.get("total", 0),
+        time_ms=reload_result.get("time_ms", 0),
+        agent_initialized=reload_result.get("agent_initialized", False),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Skill 详情端点
 # --------------------------------------------------------------------------- #
 
@@ -228,57 +285,5 @@ def download_skill_zip_latest(name: str, namespace_id: str = "public", client: N
     )
 
 
-# --------------------------------------------------------------------------- #
-# Agent 相关端点
-# --------------------------------------------------------------------------- #
-
-
-@router.post("/chat", summary="与 Agent 对话", response_model=ChatResponse)
-def chat_with_agent(
-    req: ChatRequest,
-    agent_manager=Depends(get_agent_manager),
-):
-    """POST /api/v1/chat — 通过 LangChain Agent 处理用户请求。
-
-    Agent 会根据可用的 Tools（从 Nacos 加载的 Skills）自动选择并执行。
-    """
-    if not agent_manager.enabled:
-        return ChatResponse(
-            answer="Agent mode is disabled. Please contact administrator to enable it.",
-        )
-
-    result = agent_manager.chat(req.message, thread_id=req.thread_id)
-    return ChatResponse(
-        answer=result.answer,
-        tool_used=result.tool_used,
-        thinking_steps=result.thinking_steps,
-        took_ms=result.took_ms,
-    )
-
-
-@router.get("/skills/tools", summary="获取已注册 Tools 列表", response_model=ToolsListResponse)
-def get_tools_list(
-    agent_manager=Depends(get_agent_manager),
-):
-    """GET /api/v1/skills/tools — 获取当前已注册的 LangChain Tools。"""
-    tools_dict = agent_manager.loader.registry.tools
-    tools = [
-        ToolInfo(name=name, description=tool.description or "")
-        for name, tool in sorted(tools_dict.items())
-    ]
-    return ToolsListResponse(tools=tools, total=len(tools))
-
-
-@router.post("/skills/tools/reload", summary="重新加载 Tools", response_model=ReloadResponse)
-def reload_tools(
-    agent_manager=Depends(get_agent_manager),
-):
-    """POST /api/v1/skills/tools/reload — 重新从 Nacos 加载所有 Skills 为 Tools。"""
-    reload_result = agent_manager.reload()
-    return ReloadResponse(
-        status=reload_result.get("status", "ok"),
-        loaded=reload_result.get("loaded", 0),
-        total=reload_result.get("total", 0),
-        time_ms=reload_result.get("time_ms", 0),
-        agent_initialized=reload_result.get("agent_initialized", False),
-    )
+# Agent routes are registered above (/api/v1/chat, /skills/tools) before
+# /skills/{name} parameterized route to avoid FastAPI path priority issues.
